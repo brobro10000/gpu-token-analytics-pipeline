@@ -19,11 +19,10 @@ paths:
   - doc
 
 paths-ignore:
-  - node_modules
-  - dist
-  - build
-  - .venv
-  - venv
-  - tests/fixtures
-  - **/*.min.js
-  - **/generated/**
+  - "node_modules"
+  - "dist"
+  - "build"
+  - ".venv"
+  - "venv"
+  - "**/generated/**"
+  - "**/*.min.js"
