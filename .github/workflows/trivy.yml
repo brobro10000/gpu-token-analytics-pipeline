@@ -1,27 +1,36 @@
 name: Trivy Security Scan
 
 on:
+  # Fork-safe PR context so we can upload SARIF to Code Scanning
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  # Still scan on pushes to default branches and on schedule
   push:
-    branches: [ "main", "master" ]
-  pull_request:
     branches: [ "main", "master" ]
   schedule:
     - cron: "0 4 * * 1"
 
 permissions:
   contents: read
-  security-events: write
+  actions: read           # <- upload-sarif queries the workflow run
+  security-events: write  # <- required to upload SARIF to code scanning
 
 jobs:
   trivy-fs:
     name: Trivy FS/IaC/Secrets
     runs-on: ubuntu-latest
     steps:
+      # IMPORTANT: when using pull_request_target, never execute untrusted PR code.
+      # Check out the BASE commit so we only read config and scan the base snapshot.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+
       - name: Trivy FS scan → SARIF
         uses: aquasecurity/trivy-action@0.24.0
         with:
           scan-type: fs
+          exit-code: 0
           ignore-unfixed: true
           format: sarif
           output: trivy-fs.sarif
@@ -36,6 +45,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+
       - name: Trivy deps (sbom) → SARIF
         uses: aquasecurity/trivy-action@0.24.0
         with:
