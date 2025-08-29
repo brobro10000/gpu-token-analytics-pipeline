@@ -1,0 +1,29 @@
+name: "CodeQL config"
+disable-default-queries: false
+
+queries:
+  # Start with GitHub's extended security set; add more later if you wish
+  - uses: security-extended
+
+paths:
+  # Limit analysis to relevant folders (adjust as you like)
+  - src
+  - app
+  - services
+  - packages
+  - backend
+  - frontend
+  - infra
+  - terraform
+  - scripts
+  - doc
+
+paths-ignore:
+  - node_modules
+  - dist
+  - build
+  - .venv
+  - venv
+  - tests/fixtures
+  - **/*.min.js
+  - **/generated/**
