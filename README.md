@@ -10,19 +10,19 @@ This repository contains documentation and artifacts for CS5287 course assignmen
 
 ### Assignment Progression
 
-- **[CA0 — Manual Deployment on 4 VMs](./docs/assignments/CA0/README.md)**  
+- **[CA0 — Manual Deployment on 4 VMs](CA0/README.md)**  
   Manual provisioning, SSH hardening, basic pipeline validation
 
-- **[CA1 — IaC Rebuild (Same Topology, Automated)](./docs/assignments/CA1/README.md)**  
+- **[CA1 — IaC Rebuild (Same Topology, Automated)](CA1/README.md)**  
   Infrastructure as Code with Terraform/Ansible, idempotent deployment
 
-- **[CA2 — Orchestrated (Kubernetes/Swarm)](./docs/assignments/CA2/README.md)**  
+- **[CA2 — Orchestrated (Kubernetes/Swarm)](CA2/README.md)**  
   Container orchestration with StatefulSets, Deployments, and Services
 
-- **[CA3 — Cloud-Native Ops](./docs/assignments/CA3/README.md)**  
+- **[CA3 — Cloud-Native Ops](CA3/README.md)**  
   Observability, autoscaling, security policies, and resilience testing
 
-- **[CA4 — Multi-Site Connectivity & Advanced Networking](./docs/assignments/CA4/README.md)**  
+- **[CA4 — Multi-Site Connectivity & Advanced Networking](CA4/README.md)**  
   Service mesh, cross-region replication, and disaster recovery
 
 Each assignment includes architecture diagrams (PlantUML), replication steps, and conversation summaries documenting decisions and tradeoffs.
