@@ -12,16 +12,14 @@ on:
 
 permissions:
   contents: read
-  actions: read           # <- upload-sarif queries the workflow run
-  security-events: write  # <- required to upload SARIF to code scanning
+  actions: read
+  security-events: write
 
 jobs:
   trivy-fs:
     name: Trivy FS/IaC/Secrets
     runs-on: ubuntu-latest
     steps:
-      # IMPORTANT: when using pull_request_target, never execute untrusted PR code.
-      # Check out the BASE commit so we only read config and scan the base snapshot.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
