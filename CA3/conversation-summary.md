@@ -1,16 +1,23 @@
 # Conversation Summary — CA3
 
-Context
-- Add cloud-native operations features to enhance the Kubernetes deployment from CA2.
+Meta
+- Date: 2025-08-29 03:58:24 UTC
+- User: @brobro10000
+- Context: Add ops features to CA2 diagram: observability, autoscaling, security, resilience.
 
-Decisions & Tradeoffs
-- Prometheus + Grafana stack for metrics and visualization.
-- Loki for log aggregation to complement metrics.
-- HPA based on CPU/memory and custom metrics like TPS.
-- NetworkPolicies for microsegmentation; PDBs for availability.
+Request
+- Incorporate Prometheus, Grafana, and logs collector; show HPA, NetworkPolicies, and PDBs; include Chaos component.
+
+Decisions
+- Keep observability in a separate namespace for clarity.
+- Expose /metrics from Processor and model HPA scaling signals (CPU/QPS) in the diagram text.
+
+Tradeoffs
+- Loki vs. ELK: choose generic label (Loki/ELK) to allow either stack.
+- HPA based on CPU to start; custom metrics later.
 
 AI Assistance
-- Copilot suggested ops tooling and resilience patterns.
+- Copilot used CS5287 CA3 deliverables list to ensure all required elements appear in the diagram and notes.
 
 Next
-- Add multi-region and advanced networking in CA4.
+- Add alert rules and dashboard JSON in a future iteration; keep this PR documentation-only.

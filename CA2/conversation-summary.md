@@ -1,15 +1,23 @@
 # Conversation Summary — CA2
 
-Context
-- Add orchestrator stage in the same consolidated PR for iterative complexity.
+Meta
+- Date: 2025-08-29 03:58:24 UTC
+- User: @brobro10000
+- Context: Update CA2 PlantUML to an orchestrated deployment (Kubernetes), per CS5287 CA2.
 
-Decisions & Tradeoffs
-- Single-broker Kafka SS for simplicity; can scale in later iterations.
-- PVC-backed storage; avoid hostPath to remain portable.
-- KRaft mode to drop ZooKeeper dependency.
+Request
+- Iterate from CA0/CA1 using the same visual style; show StatefulSets, Deployments, Services, PVCs, ConfigMaps/Secrets, and optional Ingress.
+
+Decisions
+- Use KRaft Kafka (no ZooKeeper) to simplify the cluster diagram.
+- Represent producers as Job/CronJob and processor as a Deployment (replicas=2) with a ClusterIP Service.
+
+Tradeoffs
+- Single-broker SS for simplicity vs. production realism (multi-broker).
+- Optional Ingress for /health to keep ports minimal in lab environments.
 
 AI Assistance
-- Copilot proposed K8s layout and no-cost stack.
+- Copilot aligned elements to CS5287 CA2 checklist and prior CA0 style.
 
 Next
-- Prepare k8s/ manifest skeletons in a future PR.
+- Provide manifest skeletons as a separate change; this PR updates diagrams and summaries only.
