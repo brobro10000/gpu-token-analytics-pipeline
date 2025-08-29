@@ -1,4 +1,3 @@
-# .github/workflows/tfsec.yml
 name: tfsec (Terraform IaC)
 
 on:
@@ -11,14 +10,16 @@ on:
 
 permissions:
   contents: read
-  actions: read
-  security-events: write
+  actions: read            # required by upload-sarif
+  security-events: write   # required to upload SARIF
 
 jobs:
   tfsec:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Fork-safe: scan BASE commit only; do NOT execute PR head code
+      - name: Checkout (base)
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
 
@@ -26,11 +27,36 @@ jobs:
         run: |
           curl -sSL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
 
-      - name: Run tfsec
+      - name: Run tfsec (SARIF, never fail CI)
+        # Add 'working-directory: infra/terraform' if your TF lives there
         run: |
-          tfsec . --format sarif --out tfsec.sarif || true
+          tfsec . \
+            --format sarif \
+            --out tfsec.sarif \
+            --soft-fail \
+            --no-colour || true
 
-      - name: Upload SARIF
+      - name: Detect Code Scanning availability
+        id: cs
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: repo } = await github.rest.repos.get({ owner: context.repo.owner, repo: context.repo.repo });
+            const enabled = repo.security_and_analysis?.advanced_security?.status === 'enabled';
+            core.info(`Advanced Security enabled: ${enabled}`);
+            core.setOutput('enabled', enabled ? 'true' : 'false');
+
+      - name: Upload SARIF to Code Scanning
+        if: steps.cs.outputs.enabled == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: tfsec.sarif
+        continue-on-error: true   # never break CI due to upload issues
+
+      - name: Save SARIF as artifact (fallback)
+        if: steps.cs.outputs.enabled != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfsec-sarif
+          path: tfsec.sarif
