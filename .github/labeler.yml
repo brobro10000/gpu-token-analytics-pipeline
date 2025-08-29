@@ -1,116 +1,186 @@
 # === Infra / Cloud ===
 aws:
-  - 'infra/**'
-  - 'terraform/**'
-  - '**/*.tf'
-  - '**/aws/**'
-  - '**/*aws*.md'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "infra/**"
+          - "terraform/**"
+          - "**/*.tf"
+          - "**/aws/**"
+          - "**/*aws*.md"
+
 terraform:
-  - 'terraform/**'
-  - '**/*.tf'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "terraform/**"
+          - "**/*.tf"
+
 opensearch:
-  - '**/opensearch/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/opensearch/**"
+
 kafka:
-  - '**/kafka/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/kafka/**"
+
 mongodb:
-  - '**/mongo*/**'
-  - '**/*mongo*.md'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/mongo*/**"
+          - "**/*mongo*.md"
 
 # === Containers / K8s ===
 docker:
-  - '**/Dockerfile'
-  - '**/docker-compose*.yml'
-  - '**/docker/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/Dockerfile"
+          - "**/*.dockerfile"
+          - "**/docker-compose*.yml"
+          - "**/docker-compose*.yaml"
+          - "**/docker/**"
+
 kubernetes:
-  - '**/k8s/**'
-  - '**/*.k8s.yaml'
-  - '**/*deployment*.yaml'
-  - '**/*service*.yaml'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/k8s/**"
+          - "**/kubernetes/**"
+          - "**/*.k8s.yaml"
+          - "**/*deployment*.yaml"
+          - "**/*service*.yaml"
 
 # === Languages / Stacks ===
 python:
-  - '**/*.py'
-  - '**/requirements.txt'
-  - '**/pyproject.toml'
-  - '**/Pipfile'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.py"
+          - "**/requirements.txt"
+          - "**/pyproject.toml"
+          - "**/Pipfile"
+
 javascript:
-  - '**/*.js'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.js"
+
 typescript:
-  - '**/*.ts'
-  - '**/*.tsx'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.ts"
+          - "**/*.tsx"
+
 node:
-  - 'package.json'
-  - 'package-lock.json'
-  - 'pnpm-lock.yaml'
-  - 'yarn.lock'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package.json"
+          - "package-lock.json"
+          - "pnpm-lock.yaml"
+          - "yarn.lock"
+
 react:
-  - '**/src/**'
-  - '**/*.tsx'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/src/**"
+          - "**/*.tsx"
+
 fastapi:
-  - '**/*fastapi*/**'
-  - '**/*.py'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*fastapi*/**"
+          - "**/*.py"
 
 # === CI / Automation ===
 github-actions:
-  - '.github/workflows/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+
 ci:
-  - '.github/workflows/**'
-  - '**/.github/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/workflows/**"
+          - "**/.github/**"
 
 # === Security / Scanning ===
 security:
-  - '**/.github/workflows/codeql.yml'
-  - '**/.github/workflows/tfsec.yml'
-  - '**/.github/workflows/trivy.yml'
-  - '**/.github/dependabot.yml'
-  - '**/.trivyignore'
-  - '**/.tfsec*'
-  - 'CODEOWNERS'
-  - 'SECURITY.md'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/.github/workflows/codeql.yml"
+          - "**/.github/workflows/tfsec.yml"
+          - "**/.github/workflows/trivy.yml"
+          - "**/.github/dependabot.yml"
+          - "**/.trivyignore"
+          - "**/.tfsec*"
+          - "CODEOWNERS"
+          - "SECURITY.md"
 
 # === Docs / Diagrams / Data ===
 docs:
-  - '**/*.md'
-  - 'doc/**'
-  - 'docs/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - "doc/**"
+          - "docs/**"
+
 diagrams:
-  - '**/*.puml'
-  - '**/*.plantuml'
-  - '**/*.mmd'
-  - '**/*.drawio'
-  - '**/diagrams/**'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.puml"
+          - "**/*.plantuml"
+          - "**/*.mmd"
+          - "**/*.drawio"
+          - "**/diagrams/**"
+
 data:
-  - 'data/**'
-  - '**/*.csv'
-  - '**/*.parquet'
-  - '**/*.jsonl'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "data/**"
+          - "**/*.csv"
+          - "**/*.parquet"
+          - "**/*.jsonl"
 
 # === Tests / Tooling ===
 tests:
-  - '**/*test*/**'
-  - '**/*.spec.*'
-  - '**/*.test.*'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*test*/**"
+          - "**/*.spec.*"
+          - "**/*.test.*"
+
 lint:
-  - '**/.eslintrc*'
-  - '**/.prettierrc*'
-  - '**/.flake8'
-  - '**/pyproject.toml'
-  - '**/.ruff.toml'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/.eslintrc*"
+          - "**/.prettierrc*"
+          - "**/.flake8"
+          - "**/pyproject.toml"
+          - "**/.ruff.toml"
+
 formatting:
-  - '**/.prettierrc*'
-  - '**/.editorconfig'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/.prettierrc*"
+          - "**/.editorconfig"
 
 # === Repo hygiene ===
 dependencies:
-  - 'package-lock.json'
-  - 'pnpm-lock.yaml'
-  - 'yarn.lock'
-  - 'requirements.txt'
-  - 'poetry.lock'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "package-lock.json"
+          - "pnpm-lock.yaml"
+          - "yarn.lock"
+          - "requirements.txt"
+          - "poetry.lock"
+
 changelog:
-  - 'CHANGELOG.md'
+  - changed-files:
+      - any-glob-to-any-file:
+          - "CHANGELOG.md"
+
 config:
-  - '.gitattributes'
-  - '.gitignore'
-  - '.env.example'
-  - '.env.*.example'
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".gitattributes"
+          - ".gitignore"
+          - ".env.example"
+          - ".env.*.example"
