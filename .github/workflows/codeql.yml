@@ -1,0 +1,70 @@
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+    types: [opened, synchronize, reopened]
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write   # REQUIRED to upload SARIF results
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ "javascript-typescript", "python" ]
+        # Add more if needed: "go", "java-kotlin", "csharp", "ruby", "cpp", "swift"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Optional: speed up JS/TS builds for better analysis context
+      - name: Setup Node
+        if: matrix.language == 'javascript-typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install JS deps (optional)
+        if: matrix.language == 'javascript-typescript' && hashFiles('**/package-lock.json') != ''
+        run: npm ci --ignore-scripts --no-audit || true
+
+      # Optional: set up Python environment if you have requirements.txt/pyproject
+      - name: Setup Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps (optional)
+        if: matrix.language == 'python' && (hashFiles('**/requirements.txt') != '' || hashFiles('**/pyproject.toml') != '')
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+          if [ -f pyproject.toml ]; then pip install . || true; fi
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/workflows/codeql-config.yml
+
+      # For compiled languages you'd insert a manual build here.
+      # For JS/TS/Python, autobuild is sufficient.
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
