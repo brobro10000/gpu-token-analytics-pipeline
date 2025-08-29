@@ -1,0 +1,125 @@
+# =========================
+# OS / Editor Junk
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE / Editor Settings
+.vscode/
+.idea/
+*.code-workspace
+
+# =========================
+# Terraform
+# =========================
+.terraform/
+.terraform.lock.hcl
+
+# State files
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Variable files (sensitive)
+*.tfvars
+*.tfvars.json
+terraform.tfvars
+*.auto.tfvars
+
+# Overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.eggs/
+.eggs/
+*.pyo
+*.pyd
+*.whl
+dist/
+build/
+.eggs/
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# Jupyter
+.ipynb_checkpoints/
+.jupyter/
+profile_default/
+.pytype/
+.mypy_cache/
+.dmypy.json
+.pyre/
+
+# Coverage / testing
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytest_cache/
+.pytest_cache/
+
+# =========================
+# Node / JavaScript
+# =========================
+node_modules/
+bower_components/
+jspm_packages/
+dist/
+build/
+.cache/
+.next/
+.nuxt/
+out/
+coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Package managers
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# =========================
+# Data / Artifacts
+# =========================
+*.sqlite
+*.db
+*.parquet
+*.feather
+*.h5
+*.pkl
+*.pickle
+*.csv~
+*.tsv~
+
+# =========================
+# Miscellaneous
+# =========================
+.env
+.env.*
+!.env.example
+*.bak
+*.tmp
