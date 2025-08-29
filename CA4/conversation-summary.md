@@ -1,16 +1,23 @@
 # Conversation Summary — CA4
 
-Context
-- Final assignment adding multi-site connectivity and advanced networking to complete the progression.
+Meta
+- Date: 2025-08-29 03:58:24 UTC
+- User: @brobro10000
+- Context: Extend CA2 to multi/hybrid across two sites with secure connectivity and replication.
 
-Decisions & Tradeoffs
-- Service mesh (Istio) for traffic management and security between services.
-- Cross-region replication for both Kafka and MongoDB.
-- Global load balancer for intelligent traffic routing.
-- VPN or Transit Gateway for secure cross-region connectivity.
+Request
+- Show two sites/clusters, secure connectivity (VPN/mesh/bastion), MirrorMaker2 for Kafka topics, and either DB replica set or backup/restore.
+
+Decisions
+- Prefer WireGuard-based VPN where possible (simplicity, no-cost); otherwise document bastion tunnels.
+- Keep active/active topics conceptually via MM2 while leaving DB strategy flexible.
+
+Tradeoffs
+- MM2 simplicity vs. complex cross-cluster Kafka alternatives.
+- DB replica set realism vs. course-lab constraints (backup/restore acceptable).
 
 AI Assistance
-- Copilot designed multi-region architecture and failover scenarios.
+- Copilot produced the diagram and summary from CS5287 CA4 rubric and roadmap.
 
 Next
-- This completes the CA0-CA4 progression from manual VMs to enterprise multi-site deployment.
+- In a subsequent branch, include WireGuard and MM2 example configs; this PR documents the design.

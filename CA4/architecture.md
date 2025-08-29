@@ -1,61 +1,62 @@
-# CA4 – Multi-Site Connectivity & Advanced Networking
+# CA4 – Multi-Hybrid Cloud (Final)
 
 Context
-- Scale to multiple regions with service mesh, cross-region replication, and disaster recovery.
+- Extend CA2 across two sites/clouds with secure connectivity and replication; prove resilience and document a runbook.
 
 Diagram (PlantUML)
 ```plantuml
 @startuml
-title CA4 - Multi-Site with Service Mesh & Cross-Region Replication
+title CA4 - Multi/Hybrid: Two Sites + Secure Connectivity + Replication — Iteration from CA3
 
 skinparam shadowing false
 skinparam monochrome true
 skinparam componentStyle rectangle
 
-actor "Global User" as User
+actor "Operator" as Op
 
-cloud "Region A (Primary)" {
-  node "K8s Cluster A" {
-    frame "Service Mesh (Istio)" {
-      component "Kafka A\nLeader" as KafkaA
-      component "MongoDB A\nPrimary" as MongoA
-      component "Processor A\nActive" as ProcA
-      component "Producers A" as ProdA
-    }
+node "Site A (Cluster/Region A)" {
+  frame "Namespace: pipeline" {
+    component "Kafka-A (KRaft) SS" as KafkaA
+    component "Mongo-A SS" as MongoA
+    component "Processor-A Deploy" as ProcA
+    component "Producers-A Job" as ProdA
   }
 }
 
-cloud "Region B (DR)" {
-  node "K8s Cluster B" {
-    frame "Service Mesh (Istio)" {
-      component "Kafka B\nFollower" as KafkaB
-      component "MongoDB B\nSecondary" as MongoB
-      component "Processor B\nStandby" as ProcB
-      component "Producers B" as ProdB
-    }
+node "Site B (Cluster/Region B)" {
+  frame "Namespace: pipeline" {
+    component "Kafka-B (KRaft) SS" as KafkaB
+    component "Mongo-B SS" as MongoB
+    component "Processor-B Deploy" as ProcB
+    component "Producers-B Job" as ProdB
   }
 }
 
-component "Global Load Balancer" as GLB
-component "Cross-Region VPN/TGW" as VPN
+cloud "Secure Connectivity\n(VPN/Mesh/Bastion)" as Conn
+KafkaA <--> Conn : MirrorMaker2
+Conn <--> KafkaB : cross-region topics
+MongoA <--> Conn : replica set or
+Conn <--> MongoB : backup/restore
 
-User --> GLB
-GLB --> ProcA : primary traffic
-GLB --> ProcB : failover traffic
-
-KafkaA <--> KafkaB : cross-region replication
-MongoA <--> MongoB : replica set sync
+Op --> ProcA : primary ops
+Op --> ProcB : failover ops
+ProdA --> KafkaA : produce
+ProcA --> KafkaA : consume
+ProcA --> MongoA : write
+ProdB --> KafkaB : produce
+ProcB --> KafkaB : consume
+ProcB --> MongoB : write
 
 note bottom
-New in CA4:
-- Multi-region deployment
-- Service mesh (Istio/Linkerd)
-- Cross-region data replication
-- Global load balancing & failover
+CA4 Requirements:
+- Two sites with secure connectivity
+- Cross-region Kafka replication (MM2)
+- DB strategy (replica set or backup/restore)
+- Failover drill & runbook documentation
 end note
 
 @enduml
 ```
 
 Replication (high-level)
-- Deploy multi-region clusters; configure service mesh; test cross-region failover.
+- Establish connectivity, deploy to both sites, configure MM2 and DB strategy, run failover drill and document recovery.

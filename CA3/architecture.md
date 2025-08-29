@@ -1,58 +1,59 @@
 # CA3 – Cloud-Native Ops (Observability, Autoscaling, Security, Resilience)
 
 Context
-- Enhance CA2 with ops features and resilience tests.
+- Enhance the CA2 cluster with ops features: logs/metrics, dashboards, autoscaling, network policies, disruption budgets, chaos drills.
 
 Diagram (PlantUML)
 ```plantuml
 @startuml
-title CA3 - Cloud-Native Ops (Observability + Autoscaling + Security + Resilience)
+title CA3 - Ops: Observability + Autoscaling + Security — Iteration from CA2
 
 skinparam shadowing false
 skinparam monochrome true
 skinparam componentStyle rectangle
 
-actor "Developer" as Dev
-actor "SRE" as SRE
+actor "Operator" as Op
 
 node "Kubernetes Cluster" {
   frame "Namespace: pipeline" {
-    component "Kafka SS + PVC" as Kafka
-    component "MongoDB SS + PVC" as Mongo
-    component "Processor Deployment\nHPA enabled\n/metrics endpoint" as Proc
-    component "Producers Job" as Prod
-  }
-  
-  frame "Namespace: monitoring" {
-    component "Prometheus\nscrape /metrics" as Prom
-    component "Grafana\ndashboards" as Graf
-    component "Loki\nlogs aggregation" as Loki
-  }
-  
-  frame "Security & Policies" {
-    component "NetworkPolicies\nPodSecurityPolicies" as NetPol
+    component "Kafka SS" as Kafka
+    component "Mongo SS" as Mongo
+    component "Processor Deploy\nHPA: CPU/QPS" as Proc
+    component "Producers Job/Cron" as Prod
+    component "NetworkPolicies" as NetPol
     component "PodDisruptionBudgets" as PDB
+    component "Secrets/ConfigMaps" as Cfg
   }
+  frame "Namespace: observability" {
+    component "Prometheus\nscrapes /metrics" as Prom
+    component "Grafana\ndashboards" as Graf
+    component "Loki/ELK\nlogs aggregation" as Logs
+  }
+  component "Chaos (opt)\nkill pods / add latency" as Chaos
 }
 
-Dev --> Graf : view dashboards
-SRE --> Graf : alerts & metrics
-Proc --> Prom : expose /metrics
-Prom --> Graf : query metrics
-Kafka --> Loki : logs
-Mongo --> Loki : logs
-Proc --> Loki : logs
+Prod --> Kafka : produce
+Proc --> Kafka : consume
+Proc --> Mongo : writes
+Prom --> Proc : scrape /metrics
+Graf --> Prom : dashboards
+Logs --> Proc : collect logs
+Chaos ..> Proc : faults
+NetPol .. Kafka
+NetPol .. Mongo
+PDB .. Kafka
+PDB .. Proc
 
 note bottom
-New in CA3:
-- Prometheus + Grafana + Loki
-- HPA for processor scaling
+CA3 Requirements:
+- Central logs + three key metrics
+- HPA configured and demonstrated
 - NetworkPolicies + PDBs
-- Chaos engineering drills
+- Resilience drill & runbook entries
 end note
 
 @enduml
 ```
 
 Replication (high-level)
-- Deploy monitoring stack; configure HPA and policies; run chaos experiments.
+- Deploy Prometheus/Grafana/Loki; expose /metrics; configure HPA, NetPols, PDBs; execute a chaos drill and document recovery.

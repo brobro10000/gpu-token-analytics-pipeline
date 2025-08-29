@@ -1,12 +1,12 @@
 # CA2 – PaaS Orchestration (Kubernetes or Swarm)
 
 Context
-- Declarative manifests on a single Kubernetes cluster.
+- Run the CA0 pipeline on an orchestrator using declarative manifests. Example: Kubernetes with KRaft Kafka.
 
 Diagram (PlantUML)
 ```plantuml
 @startuml
-title CA2 - Kubernetes Orchestration (Single Cluster)
+title CA2 - Orchestrated Pipeline (Kubernetes) — Iteration from CA1
 
 skinparam shadowing false
 skinparam monochrome true
@@ -16,11 +16,11 @@ actor "Developer" as Dev
 
 node "Kubernetes Cluster" {
   frame "Namespace: pipeline" {
-    component "Kafka (KRaft) StatefulSet\n1 broker + PVC\nService: kafka:9092" as Kafka
-    component "MongoDB StatefulSet\nPVC\nService: mongo:27017" as Mongo
-    component "Processor Deployment\nReplicas: 2\nService: processor:8080\nEnv: PRICE_PER_HOUR_USD" as Proc
-    component "Producers Job/CronJob\nN pods" as Prod
-    component "ConfigMaps/Secrets\nenv, creds, topics" as Cfg
+    component "Kafka (KRaft)\nStatefulSet + PVC\nService: kafka:9092" as Kafka
+    component "MongoDB\nStatefulSet + PVC\nService: mongo:27017" as Mongo
+    component "Processor\nDeployment (replicas=2)\nService: processor:8080" as Proc
+    component "Producers\nJob/CronJob (N pods)" as Prod
+    component "ConfigMaps/Secrets\n(env, creds, topics)" as Cfg
   }
   component "Ingress/NodePort\n(optional /health)" as Ingress
 }
@@ -31,14 +31,14 @@ Proc --> Kafka : consume :9092
 Proc --> Mongo : write gpu_metrics, token_usage
 
 note bottom
-New in CA2:
-- Declarative manifests (Deployments, StatefulSets)
-- Services, ConfigMaps, Secrets
-- Optional ingress; storage via PVCs
+CA2 Requirements:
+- Declarative manifests only
+- Services, PVCs, ConfigMaps, Secrets
+- Optional ingress; validate & teardown
 end note
 
 @enduml
 ```
 
 Replication (high-level)
-- Apply manifests; verify pods, services, PVCs; check Mongo docs.
+- kubectl apply -f k8s/: namespace, Secrets/ConfigMaps, Kafka SS, Mongo SS, Processor Deployment, Producers Job.
