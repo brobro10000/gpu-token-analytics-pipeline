@@ -1,0 +1,60 @@
+@startuml
+title CA0 - 4 AWS VMs (Kafka + Mongo + Processor + Producers) + GPU Cost/Token
+
+skinparam shadowing false
+skinparam monochrome true
+skinparam componentStyle rectangle
+
+actor "Admin (Your IP)" as Admin
+
+node "AWS us-east-1" {
+  frame "VPC 10.0.0.0/16\nSubnet 10.0.1.0/24" as VPC {
+    node "VM1 kafka-zk\n10.0.1.10\nKafka 3.7.0:9092\nZooKeeper 3.9.2 :2181 (localhost)" as VM1
+    node "VM2 mongodb\n10.0.1.11\nMongoDB 7.0:27017\nCollections: gpu_metrics, token_usage" as VM2
+    node "VM3 processor\n10.0.1.12\nDocker + FastAPI:8080\nGPU metrics: NVML/SMI/Seed" as VM3
+    node "VM4 producers\n10.0.1.13\nDocker + 2 producers" as VM4
+  }
+}
+
+' Admin access
+Admin --> VM1 : SSH 22 (key only)
+Admin --> VM2 : SSH 22 (key only)
+Admin --> VM3 : SSH 22 (key only)
+Admin --> VM4 : SSH 22 (key only)
+Admin ..> VM3 : HTTP 8080 (/health, optional /gpu/info)
+
+' Pipeline wiring
+VM4 --> VM1 : Kafka 9092 (produce)
+VM3 --> VM1 : Kafka 9092 (consume)
+VM3 --> VM2 : MongoDB 27017 (write records)
+
+' GPU metrics and cost-per-token
+component "NVML\n(nvidia-ml-py3)" as NVML
+component "nvidia-smi\n(parser)" as SMI
+database "gpu_seed.json\n(local file)" as SEED
+
+VM3 ..> NVML : optional read
+VM3 ..> SMI : optional read
+VM3 ..> SEED : fallback read
+VM3 --> VM2 : write gpu_metrics
+VM3 --> VM2 : write token_usage\n(tokens, tps, cost_per_token)
+
+' Security annotations
+note right of VM1
+SG: allow 9092 from
+- sg-processor
+- sg-producers
+UFW mirror SG
+end note
+
+note right of VM2
+SG: allow 27017 from
+- sg-processor only
+end note
+
+note right of VM3
+SG: allow 8080 from Admin IP
+Env: PRICE_PER_HOUR_USD
+No extra network ports for GPU
+end note
+@enduml

@@ -123,3 +123,22 @@ pnpm-lock.yaml
 !.env.example
 *.bak
 *.tmp
+
+# --- Local Dev Artifacts ---
+# Kafka tarballs and extracted dirs
+CA0/kafka_2.13-*/
+CA0/kafka_*.tgz
+
+# Kafka runtime data (project-local)
+CA0/.kafka-data/
+CA0/kafka-logs/
+CA0/kraft-combined-logs/
+
+# Python venvs
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Logs
+*.log
+/tmp/kafka-*.log
