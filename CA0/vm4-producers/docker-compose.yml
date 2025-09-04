@@ -1,0 +1,7 @@
+services:
+  producer:
+    build: .
+    restart: "no"
+    environment:
+      - KAFKA_BOOTSTRAP=10.0.1.10:9092
+      - GPU_SEED=/data/gpu_seed.json

@@ -1,0 +1,20 @@
+[
+  {
+    "gpu_index":0,
+    "name":"RTX 3090",
+    "utilization":0.7,
+    "mem_used_mb":9000,
+    "mem_total_mb":24576,
+    "power_w":280,
+    "price_per_hour_usd":0.85
+  },
+  {
+    "gpu_index":0,
+    "name":"A100 40GB",
+    "utilization":0.5,
+    "mem_used_mb":12000,
+    "mem_total_mb":40960,
+    "power_w":210,
+    "price_per_hour_usd":3.2
+  }
+]

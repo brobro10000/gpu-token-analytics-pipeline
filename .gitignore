@@ -16,14 +16,12 @@ Thumbs.db
 # =========================
 .terraform/
 .terraform.lock.hcl
-
-# State files
 *.tfstate
 *.tfstate.*
 crash.log
 crash.*.log
 
-# Variable files (sensitive)
+# Sensitive Terraform vars
 *.tfvars
 *.tfvars.json
 terraform.tfvars
@@ -48,7 +46,6 @@ __pycache__/
 *.whl
 dist/
 build/
-.eggs/
 .venv/
 venv/
 ENV/
@@ -58,7 +55,7 @@ pip-wheel-metadata/
 *.manifest
 *.spec
 
-# Jupyter
+# Jupyter / Analysis
 .ipynb_checkpoints/
 .jupyter/
 profile_default/
@@ -75,7 +72,6 @@ htmlcov/
 .coverage.*
 .cache
 pytest_cache/
-.pytest_cache/
 
 # =========================
 # Node / JavaScript
@@ -83,14 +79,13 @@ pytest_cache/
 node_modules/
 bower_components/
 jspm_packages/
-dist/
-build/
-.cache/
 .next/
 .nuxt/
 out/
 coverage/
-*.log
+dist/
+build/
+.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -116,10 +111,40 @@ pnpm-lock.yaml
 *.tsv~
 
 # =========================
-# Miscellaneous
+# Environment & Credentials
 # =========================
 .env
 .env.*
 !.env.example
-*.bak
-*.tmp
+*.pem
+*.key
+*.crt
+.aws/
+
+# =========================
+# Local Runtime Data
+# =========================
+nohup.out
+*.log
+/tmp/kafka-*.log
+
+# Kafka tarballs and extracted dirs
+CA0/kafka_2.13-*/
+CA0/kafka_*.tgz
+
+# Kafka runtime data (project-local)
+CA0/.kafka-data/
+CA0/kafka-logs/
+CA0/kraft-combined-logs/
+
+# Mongo runtime (if local volumes used)
+mongo-data/
+
+# =========================
+# Large Binaries
+# =========================
+*.mp4
+*.mov
+*.zip
+*.tar
+*.tgz

@@ -1,0 +1,11 @@
+services:
+  processor:
+    build: .
+    restart: unless-stopped
+    environment:
+      - KAFKA_BOOTSTRAP=10.0.1.10:9092
+      - MONGO_URL=mongodb://10.0.1.11:27017/ca0
+      - PRICE_PER_HOUR_USD=0.85
+    ports:
+      - "8080:8080"
+    user: "10001:10001"

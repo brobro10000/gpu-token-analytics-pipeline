@@ -1,0 +1,49 @@
+# --- Default text normalization ---
+* text=auto eol=lf
+
+# --- Markdown, docs, configs (force text diffs) ---
+*.md      text diff=markdown
+*.puml    text
+*.plantuml text
+*.yml     text
+*.yaml    text
+*.json    text
+*.toml    text
+*.ini     text
+*.cfg     text
+*.sh      text
+*.env     text
+
+# --- Code files (language-specific diff drivers optional) ---
+*.py      text diff=python
+*.java    text diff=java
+*.js      text diff=javascript
+*.ts      text diff=javascript
+*.tsx     text diff=javascript
+*.jsx     text diff=javascript
+*.go      text diff=golang
+*.c       text diff=cpp
+*.cpp     text diff=cpp
+*.h       text diff=cpp
+*.hpp     text diff=cpp
+
+# --- Binaries (no diff, just store) ---
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.svg     binary
+*.pdf     binary
+*.docx    binary
+*.pptx    binary
+*.xlsx    binary
+*.mp4     binary
+*.mov     binary
+*.avi     binary
+*.tgz     binary
+*.gz      binary
+*.zip     binary
+
+# --- Kafka & DB local runtime data (ensure not mangled if ever checked in accidentally) ---
+kafka_2.13-*/ binary
+.kafka-data/  binary

@@ -1,0 +1,9 @@
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    command: ["--ipv6=false"]
+    volumes:
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
