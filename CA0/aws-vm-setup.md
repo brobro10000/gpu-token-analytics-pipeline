@@ -86,7 +86,6 @@ docker compose exec -T kafka kafka-topics.sh \
 ```bash 
 cd gpu-token-analytics-pipeline/CA0/vm2-mongo
 docker compose up -d
-
 ```
 
 # Optional: create indexes

@@ -143,6 +143,7 @@ make kafka-reset   # wipes local Kafka logs in .kafka-data
 make kafka-start   # reformat + restart
 make topics-create
 ```
+
 Database cleanup
 ```bash
 make db-clear      # drop ONLY collections gpu_metrics + token_usage in DB 'ca0'
