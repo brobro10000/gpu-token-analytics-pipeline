@@ -3,14 +3,16 @@ services:
     image: mongo:7.0
     container_name: mongodb
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     command: ["--bind_ip_all"]
+    ports: ["27017:27017"]
     volumes:
       - ./config/init-scripts:/docker-entrypoint-initdb.d:ro
-      - ./mongo-data:/data/db
+      - mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' | grep -q 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+
+volumes:
+  mongo_data:
