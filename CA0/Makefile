@@ -257,7 +257,3 @@ ssh-mongo:     ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM2_PUB)
 ssh-processor: ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM3_PUB)
 ssh-producers: ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM4_PUB)
 
-# ---- One-shot pipeline bring-up (from your laptop) ----
-ca0-bootstrap: vm1-bootstrap vm2-bootstrap vm3-bootstrap vm4-bootstrap
-ca0-setup:     vm1-setup vm2-setup vm3-setup vm4-setup
-ca0-up:        vm1-up vm3-up vm4-run

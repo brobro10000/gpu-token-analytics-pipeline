@@ -1,225 +1,334 @@
-# AWS Setup Guide — CA0 (Manual Deployment on 4 VMs, No Docker)
+# CA0 — Full AWS Console Setup & VM Bring-up (No CLI)
 
-This document describes how to provision and configure **four EC2 instances** in AWS to run the CA0 pipeline:
-
-**Producers → Kafka → Processor → MongoDB**
+**Goal:** Document the entire process we used to stand up CA0 using the **AWS web console only** (no AWS CLI), and then bootstrap each VM **individually** from the **root Makefile**. Includes the exact **Make command sequences** we ran for **bootstrap → setup → start → validate** on each VM.
 
 ---
 
-## 1. Networking
+## 0) What We’re Building
 
-1. Go to **VPC → Create VPC**:
-   - Name: `ca0-vpc`
-   - CIDR: `10.0.0.0/16`
+**Pipeline:** Producers → **Kafka (VM1)** → **Processor (VM3)** → **MongoDB (VM2)**
+(Optional) Processor exposes `GET /health` on port 8080 for checks.
 
-2. Create a **Subnet**:
-   - CIDR: `10.0.1.0/24`
-   - AZ: `us-east-1a` (or your region)
+| VM  | Role      | Private IP (authoritative) | Ports (listen)  | Notes                                             |
+| --- | --------- | -------------------------- | --------------- | ------------------------------------------------- |
+| VM1 | Kafka     | `10.0.1.197`               | 9092            | Advertised on private IP so other VMs can connect |
+| VM2 | MongoDB   | `10.0.1.86`                | 27017           | `--bind_ip_all`, published as `0.0.0.0:27017`     |
+| VM3 | Processor | `10.0.1.112`               | 8080 (optional) | Consumes Kafka, writes to Mongo; `/health`        |
+| VM4 | Producers | `10.0.1.85`                | —               | One-shot container that sends messages to Kafka   |
 
-3. Attach an **Internet Gateway** and add a default route `0.0.0.0/0 → IGW`.
+**Key principles**
 
-4. Enable **DNS hostnames** on the VPC.
-
----
-
-## 2. Security Groups
-
-Create one Security Group per VM.
-
-| Target VM (SG)  | Port  | Source                        | Purpose                    |
-|-----------------|-------|-------------------------------|----------------------------|
-| VM1 `sg-kafka`  | 22    | Admin IP                      | SSH                        |
-|                 | 9092  | `sg-processor`, `sg-producers`| Kafka client traffic       |
-| VM2 `sg-mongo`  | 22    | Admin IP                      | SSH                        |
-|                 | 27017 | `sg-processor`                | DB writes from Processor   |
-| VM3 `sg-processor` | 22 | Admin IP                      | SSH                        |
-|                 | 8080  | Admin IP                      | `/health` endpoint         |
-| VM4 `sg-producers` | 22 | Admin IP                      | SSH only                   |
-
-> Outbound traffic: allow all (default).
+* Use **private IPs** for all inter-VM service URLs.
+* Use **public IPs only for SSH** from your laptop.
+* Lock network paths with **Security Groups (SG-to-SG)**.
+* Prefer **named volumes** for stateful services (Kafka/Mongo) and **exclude** service data from rsync.
 
 ---
 
-## 3. Launch EC2 Instances
+## 1) Create the Network in the **AWS Console**
 
-| VM   | Role       | Type     | AMI (Ubuntu 22.04 LTS) | Private IP |
-|------|------------|----------|------------------------|------------|
-| VM1  | Kafka      | t3.small | 22.04 LTS              | 10.0.1.10  |
-| VM2  | MongoDB    | t3.small | 22.04 LTS              | 10.0.1.11  |
-| VM3  | Processor  | t3.micro | 22.04 LTS              | 10.0.1.12  |
-| VM4  | Producers  | t3.micro | 22.04 LTS              | 10.0.1.13  |
+### 1.1 VPC & Subnet (public)
 
-Steps:
-1. Select AMI: **Ubuntu 22.04 LTS (64-bit x86)**.
-2. Assign subnet `10.0.1.0/24`.
-3. Set private IPs manually as shown above.
-4. Attach correct Security Group.
-5. Key Pair: use `ca0.pem`.
-6. Storage: 8 GB gp3 is fine.
+1. In the console, go to **VPC → Create VPC**.
+2. Choose **VPC and more** (wizard).
+3. Set:
+
+    * **Name tag:** `ca0-vpc`
+    * **IPv4 CIDR:** `10.0.0.0/16`
+    * **Number of Availability Zones:** 1 (for simplicity)
+    * **Public subnets:** 1
+    * **Public subnet CIDR:** `10.0.1.0/24`
+    * **NAT gateways:** None (not needed for this setup)
+    * **VPC endpoints:** None (optional)
+4. Create the stack. The wizard will:
+
+    * Create the VPC, **public subnet**, **Internet Gateway**, and a **route table** with `0.0.0.0/0` via IGW.
+5. After creation, open the **Subnet** you just made:
+
+    * **Actions → Edit subnet settings → Enable auto-assign public IPv4** (so instances get public IPs for SSH).
+6. In **VPC → Your VPCs → ca0-vpc → Actions → Edit VPC settings**, confirm **DNS hostnames** is enabled.
+
+### 1.2 Security Groups (SGs)
+
+Create four service SGs + one admin SG:
+
+1. **Admin SG** (for SSH):
+
+    * **Name:** `ca0-admin`
+    * **Inbound rule:** Type **SSH**, Port **22**, Source **My IP** (or your office CIDR).
+2. **Kafka SG:**
+
+    * **Name:** `ca0-kafka`
+    * **Inbound (later):** allow **TCP 9092** from **ca0-processor** and **ca0-producers**.
+3. **Mongo SG:**
+
+    * **Name:** `ca0-mongo`
+    * **Inbound (later):** allow **TCP 27017** from **ca0-processor**.
+4. **Processor SG:**
+
+    * **Name:** `ca0-processor`
+    * **Inbound (optional):** allow **TCP 8080** from **ca0-admin** (for `/health`).
+5. **Producers SG:**
+
+    * **Name:** `ca0-producers`
+    * (No inbound needed; outbound defaults are fine.)
+
+> After creating all five SGs, edit **Inbound rules** precisely:
+>
+> * On **ca0-kafka**: add **9092** with **source = ca0-processor** and another rule **9092** with **source = ca0-producers**.
+> * On **ca0-mongo**: add **27017** with **source = ca0-processor**.
+> * On **ca0-processor** (optional): add **8080** with **source = ca0-admin**.
+
+**Why SG-to-SG?** It’s least-privilege and resilient to IP changes.
 
 ---
 
-## 4. Baseline Setup (all VMs)
+## 2) Create an EC2 **Key Pair** (for SSH)
 
-SSH into each VM and run:
+1. In the console, open **EC2 → Key pairs → Create key pair**.
+2. **Name:** `ca0` (or your preferred name), **Type:** RSA, **Format:** `.pem`.
+3. Download the `.pem` and move it to `~/.ssh/ca0`; set permissions:
 
-```bash
-sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y unzip curl wget git net-tools htop python3 python3-venv openjdk-17-jre-headless
-````
+   ```bash
+   chmod 600 ~/.ssh/ca0
+   ```
 
-Harden SSH:
+---
 
-```bash
-sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
+## 3) Launch the **4 EC2 Instances** (Ubuntu 24.04 LTS)
+
+Repeat these steps per instance (VM1..VM4), changing name, SGs, and **private IP**:
+
+1. **EC2 → Launch instance**
+2. **Name & tags:** `ca0-vm1-kafka` (then `ca0-vm2-mongo`, `ca0-vm3-processor`, `ca0-vm4-producers`)
+3. **Application and OS Images:** Ubuntu Server **24.04 LTS (amd64)**
+4. **Instance type:** `t3.small` (or larger if needed)
+5. **Key pair:** select your `ca0` key
+6. **Network settings:**
+
+    * **VPC:** `ca0-vpc`
+    * **Subnet:** your **public** subnet `10.0.1.0/24`
+    * **Auto-assign public IP:** **Enable**
+    * **Firewall (security groups):** **Attach two SGs** to each instance:
+
+        * **Admin SG:** `ca0-admin`
+        * **Service SG:** role-specific (Kafka, Mongo, Processor, Producers)
+    * **Edit network interface** → **Primary private IPv4**:
+
+        * VM1 (Kafka): **10.0.1.197**
+        * VM2 (Mongo): **10.0.1.86**
+        * VM3 (Processor): **10.0.1.112**
+        * VM4 (Producers): **10.0.1.85**
+7. **Storage:** defaults OK
+8. **User data:** leave empty (we bootstrap via Make)
+9. **Launch instance**
+
+> After launch, copy each **Public IPv4 address**; you’ll place them in the root Makefile as `VM*_PUB`.
+
+---
+
+## 4) Fill in the **Root Makefile** Coordinates
+
+In `CA0/Makefile` (already present in your repo), confirm these:
+
+```make
+SSH_KEY          ?= ~/.ssh/ca0
+SSH_USER         ?= ubuntu
+REMOTE_ROOT_DIR  ?= ~/gpu-token-analytics-pipeline
+REMOTE_CA0_DIR   ?= $(REMOTE_ROOT_DIR)/CA0
+
+# PUBLIC IPs (SSH only)
+VM1_PUB ?= 3.222.207.91
+VM2_PUB ?= 3.239.231.78
+VM3_PUB ?= 34.200.237.224
+VM4_PUB ?= 44.201.61.111
+
+# PRIVATE IPs (service-to-service)
+VM1_PRIV ?= 10.0.1.197   # Kafka
+VM2_PRIV ?= 10.0.1.86    # MongoDB
+VM3_PRIV ?= 10.0.1.112   # Processor
+VM4_PRIV ?= 10.0.1.85    # Producers
 ```
 
-(Optional) Enable UFW:
-
-```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow ssh
-sudo ufw enable
-```
+> Public IPs are only used for **SSH**. All service configs use **private IPs**.
 
 ---
 
-## 5. Install & Configure Each VM
+## 5) Bootstrap → Setup → Start — **Run From Your Laptop (Root Makefile)**
+
+We removed the “one-shot” calls and now do **each VM individually**. These are the **exact sequences** to provision each node:
 
 ### VM1 — Kafka
 
 ```bash
-wget https://archive.apache.org/dist/kafka/3.7.0/kafka_2.13-3.7.0.tgz
-tar xzf kafka_2.13-3.7.0.tgz
-cd kafka_2.13-3.7.0
+# 1) Bootstrap the VM & sync repo
+make vm1-bootstrap
 
-# Edit config
-nano config/kraft/server.properties
-# Set advertised.listeners=PLAINTEXT://10.0.1.10:9092
+# 2) Setup on the VM (ensures Kafka binds/advertises to VM1_PRIV)
+make vm1-setup      # passes KAFKA_BIND_ADDR=$(VM1_PRIV) to the VM’s Makefile
 
-# Format storage & start broker
-bin/kafka-storage.sh format -t $(uuidgen) -c config/kraft/server.properties
-bin/kafka-server-start.sh config/kraft/server.properties
+# 3) Start Kafka
+make vm1-up
+
+# 4) (Optional) Create topics; tail logs
+make vm1-logs
+# or: make -C ~/gpu-token-analytics-pipeline/CA0/vm1-kafka topics
 ```
+
+**Important**
+
+* Ensure Kafka advertises `PLAINTEXT://10.0.1.197:9092`.
+* **SG (Kafka)** must allow **9092** inbound from **ca0-processor** and **ca0-producers**.
+
+---
 
 ### VM2 — MongoDB
 
 ```bash
-curl -fsSL https://pgp.mongodb.com/server-7.0.asc | sudo tee /usr/share/keyrings/mongodb-server-7.0.gpg
-echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-sudo apt-get update
-sudo apt-get install -y mongodb-org
-sudo systemctl enable --now mongod
+make vm2-bootstrap      # base tools + rsync
+make vm2-setup          # installs Docker/Compose on the VM if missing; builds
+make vm2-up             # start MongoDB
+make vm2-wait           # waits for mongod ping to succeed
+make vm2-stats          # quick counts for ca0.gpu_metrics & ca0.token_usage
+make vm2-logs
 ```
 
-### VM3 — Processor
+**Important**
+
+* Mongo listens on `0.0.0.0:27017` in the VM (container publishes to host).
+* **SG (Mongo)** must allow **27017** inbound **from ca0-processor** only.
+* If you enable UFW on VM2, also allow:
+
+  ```
+  sudo ufw allow from 10.0.1.112 to any port 27017 proto tcp
+  ```
+
+---
+
+### VM3 — Processor (Dockerized)
 
 ```bash
-scp -i ~/.ssh/ca0.pem -r vm3-processor ubuntu@<VM3_PUBLIC_IP>:/home/ubuntu/
-ssh -i ~/.ssh/ca0.pem ubuntu@<VM3_PUBLIC_IP>
-
-cd vm3-processor/app
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Environment
-echo "KAFKA_BOOTSTRAP=10.0.1.10:9092" >> .env
-echo "MONGO_URL=mongodb://10.0.1.11:27017/ca0" >> .env
-echo "PRICE_PER_HOUR_USD=0.85" >> .env
-echo "GPU_METRICS_SOURCE=seed" >> .env
-
-uvicorn main:app --host 0.0.0.0 --port 8080
+make vm3-bootstrap
+make vm3-setup     # installs Docker/Compose on the VM if missing; builds image
+make vm3-up
+make vm3-wait
+make vm3-health    # curls http://localhost:8080/health on VM3
+make vm3-logs
 ```
 
-### VM4 — Producers
+**Env used by the container** (lives in `CA0/vm3-processor/.env`)
+
+```env
+KAFKA_BOOTSTRAP=10.0.1.197:9092
+MONGO_URL=mongodb://10.0.1.86:27017/ca0
+PRICE_PER_HOUR_USD=0.85
+HOST=0.0.0.0
+PORT=8080
+```
+
+**Important**
+
+* If Mongo times out here, it’s usually **Security Group** on VM2; fix inbound 27017 per above.
+
+---
+
+### VM4 — Producers (One-shot)
 
 ```bash
-scp -i ~/.ssh/ca0.pem -r vm4-producers ubuntu@<VM4_PUBLIC_IP>:/home/ubuntu/
-ssh -i ~/.ssh/ca0.pem ubuntu@<VM4_PUBLIC_IP>
+make vm4-bootstrap
+make vm4-setup
+make vm4-doctor      # confirms Kafka reachability (uses private IP)
+make vm4-run         # sends BATCH*2 messages; container exits when done
+make vm4-logs
+```
 
-cd vm4-producers
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+**Env (in `CA0/vm4-producers/.env`, or injected at run-time)**
 
-export KAFKA_BOOTSTRAP=10.0.1.10:9092
-python producer.py
+```env
+KAFKA_BOOTSTRAP=10.0.1.197:9092
+GPU_SEED=/data/gpu_seed.json
+BATCH=20
+SLEEP_SEC=0.5
+HOSTNAME=vm4
 ```
 
 ---
 
-## 6. Connectivity Checks
+## 6) End-to-End Validation
 
-* VM3 → VM1 (Kafka):
+```bash
+# Optional: ensure topics exist on VM1
+make -C ~/gpu-token-analytics-pipeline/CA0/vm1-kafka topics
 
-  ```bash
-  nc -vz 10.0.1.10 9092
-  ```
-* VM3 → VM2 (MongoDB):
+# Processor ready on VM3
+make vm3-up && make vm3-wait
 
-  ```bash
-  nc -vz 10.0.1.11 27017
-  ```
-* Laptop → VM3 (Processor health):
+# Run producers on VM4
+make vm4-run
 
-  ```bash
-  curl http://<VM3_PUBLIC_IP>:8080/health
-  ```
+# Mongo counts on VM2 (should increase by BATCH for both collections)
+make vm2-stats
 
----
-
-## 7. Functional Validation
-
-1. **Create topics** (on VM1):
-
-   ```bash
-   bin/kafka-topics.sh --bootstrap-server 10.0.1.10:9092 --create --topic gpu.metrics.v1 --partitions 1 --replication-factor 1
-   bin/kafka-topics.sh --bootstrap-server 10.0.1.10:9092 --create --topic token.usage.v1 --partitions 1 --replication-factor 1
-   ```
-
-2. **Run processor** (on VM3) and confirm `/health`:
-
-   ```bash
-   curl http://localhost:8080/health
-   ```
-
-3. **Run producer** (on VM4):
-
-   ```bash
-   python producer.py
-   ```
-
-4. **Verify Mongo data** (on VM2):
-
-   ```bash
-   mongosh --eval 'db.getSiblingDB("ca0").gpu_metrics.countDocuments()'
-   mongosh --eval 'db.getSiblingDB("ca0").token_usage.findOne()'
-   ```
+# Spot-check latest doc via Processor API on VM3
+# (ssh to VM3 or use the vm3-health/curl target)
+curl -s http://localhost:8080/gpu/info | jq .
+```
 
 ---
 
-## 8. Cost Control
+## 7) Security Group Matrix (Final State)
 
-* Use **t3.micro/small** only.
-* Stop instances when not in use.
-* Tag resources: `Course=CS5287, Assignment=CA0`.
+| Port            | Source SG → Dest SG           | Why                                        |
+| --------------- | ----------------------------- | ------------------------------------------ |
+| 22 (SSH)        | `ca0-admin` → all VMs         | Admin access from your IP (or office CIDR) |
+| 9092 (Kafka)    | `ca0-processor` → `ca0-kafka` | Processor consumes from Kafka              |
+| 9092 (Kafka)    | `ca0-producers` → `ca0-kafka` | Producers publish to Kafka                 |
+| 27017 (Mongo)   | `ca0-processor` → `ca0-mongo` | Processor writes to Mongo                  |
+| 8080 (optional) | `ca0-admin` → `ca0-processor` | Allow `/health` from admin IP only         |
+
+> Default **egress** open on all SGs is fine for this setup.
 
 ---
 
-## 9. Submission Checklist
+## 8) Troubleshooting (the gotchas we actually hit)
 
-* Config table with versions & IP\:Port.
-* Network diagram.
-* Screenshots:
+* **Mongo timeout (VM3 → VM2:27017)**
+  Almost always a **Security Group** issue. Fix **ca0-mongo** inbound: allow **27017** from **ca0-processor**. If UFW is enabled on VM2, also allow VM3’s private IP.
+* **Kafka advertised listener wrong**
+  Must be **VM1 private IP**; otherwise clients connect to the wrong host.
+* **Rsync denies or deletes DB files**
+  Exclude service data in rsync; prefer **named volumes** for Kafka/Mongo.
+* **`docker compose exec` using `container_name`**
+  Use the **Compose service name** (e.g., `mongo`) for exec/health commands.
 
-    * EC2 instances list
-    * Kafka topics list
-    * Processor `/health`
-    * Mongo counts and sample doc
-* Note deviations (e.g., KRaft instead of ZooKeeper).
+---
 
+## 9) Quick One-By-One Bring-up (from your laptop)
 
+```bash
+# VM1
+make vm1-bootstrap && make vm1-setup && make vm1-up
+
+# VM2
+make vm2-bootstrap && make vm2-setup && make vm2-up && make vm2-wait
+
+# VM3
+make vm3-bootstrap && make vm3-setup && make vm3-up && make vm3-wait
+
+# VM4
+make vm4-bootstrap && make vm4-setup && make vm4-doctor && make vm4-run
+
+# Validate
+make vm2-stats
+```
+
+---
+
+### Why this flow?
+
+* You asked to **bootstrap each VM individually** and to use **setup from the local root** (root Makefile) rather than logging in manually.
+* This preserves reproducibility, confines credentials to your laptop, and avoids fragile inline edits on remote hosts.
+
+---
+
+**Status:** With the steps above, you can recreate the VPC + SGs in the **AWS Console**, launch four Ubuntu instances with fixed **private IPs**, and bring each service up individually from the **root Makefile**, then validate end-to-end (Producer → Kafka → Processor → MongoDB).

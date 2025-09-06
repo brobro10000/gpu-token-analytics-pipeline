@@ -9,14 +9,8 @@
     - [Security Notes](#security-notes)
     - [Links](#links)
 
-- [Local Development Guide (CA0)](#local-development-guide-ca0)
-    - [1. Prerequisites](#1-prerequisites)
-    - [2. Running the pipeline](#2-running-the-pipeline)
-    - [3. Cleanup & Garbage Collection](#3-cleanup--garbage-collection)
-    - [4. Expected](#4-expected)
-    - [5. Config Summary (local)](#5-config-summary-local)
 
-- [AWS Deployment (CA0) — 4 VMs, no Docker](#aws-deployment-ca0--4-vms-no-docker)
+- [AWS Deployment (CA0) — 4 VMs](#aws-deployment-ca0--4-vms)
     - [0. Prerequisites (on your laptop)](#0-prerequisites-on-your-laptop)
     - [1. Create the VPC & Subnet (cost-0)](#1-create-the-vpc--subnet-cost0)
     - [2. Security Groups (ingress least-privilege)](#2-security-groups-ingress-least-privilege)
@@ -42,11 +36,11 @@
 2) Harden SSH (PasswordAuthentication no; PermitRootLogin no); enable ufw to mirror SG rules.
 3) VM1: Install Kafka 3.x (+ ZooKeeper or KRaft). Create topic tokens.
 4) VM2: Install MongoDB 7.x; create database ca0.
-5) VM3: Install Docker; run processor container with env:
+5) VM3: Set up processor service (Python venv + systemd) with env:
    - KAFKA_BOOTSTRAP (e.g., VM1:9092), KAFKA_TOPIC=tokens
    - MONGODB_URI (mongodb://VM2:27017/ca0)
    - PRICE_PER_HOUR_USD, GPU_METRICS_SOURCE=nvml|nvidia-smi|seed
-6) VM4: Install Docker; run 1–2 producer containers to publish token events.
+6) VM4: Set up producers (Python venv + optional systemd timer) to publish token events.
 7) Validate end-to-end and capture logs/screenshots.
 
 
@@ -54,7 +48,7 @@
 
 | VM   | Component  | Version                           | Host/IP:Port      | Notes                                      |
 |------|------------|-----------------------------------|-------------------|--------------------------------------------|
-| VM1  | Kafka      | 3.7.0 (Scala 2.13, KRaft)         | 10.0.1.10:9092    | Topics: `gpu.metrics.v1`, `token.usage.v1` |
+| VM1  | Kafka      | 3.7.0 (Scala 2.13, KRaft)         | 10.0.1.10:9092    | Topic: `tokens` (12 partitions)           |
 | VM2  | MongoDB    | 7.0.x                             | 10.0.1.11:27017   | Database: `ca0` with `gpu_metrics`, `token_usage` |
 | VM3  | Processor  | FastAPI 0.112 / Uvicorn 0.30      | 10.0.1.12:8080    | Env: `PRICE_PER_HOUR_USD=0.85`; consumes Kafka, writes Mongo |
 | VM4  | Producers  | Python 3.12 + confluent-kafka 2.5 | 10.0.1.13 → VM1   | Emits GPU metrics + token usage messages   |
@@ -68,127 +62,21 @@
     - VM4: no inbound except SSH.
 
 ### Links
-- Architecture diagram: [./architecture.md](./docs/architecture.md)
+- Architecture documentation: [./architecture.md](./docs/architecture.md)
+- AWS setup instructions: [./aws-vm-setup-instructions.md](./aws-vm-setup-instructions.md)
 - Conversation summary: [./conversation-summary.md](./docs/conversation-summary.md)
 
-# Local Development Guide (CA0)
+> Footnote: Local development workflows were supported in earlier iterations but are now removed for CA0. Please use the 4-VM deployment.
 
-This guide explains how to test the **Kafka → Processor → Producer → MongoDB** pipeline locally on your laptop.  
-⚠️ For **CA0 submission** you must deploy into **4 separate VMs** with Docker Compose. This doc is **dev-only**.
+## Local Development (removed)
 
----
+Note: Local development workflows were supported in earlier iterations but have been removed for CA0. Please use the 4-VM deployment documented below.
 
-## 1. Prerequisites
+# AWS Deployment (CA0) — 4 VMs
 
-- **MongoDB 7.x** running locally
-    - macOS:
-      ```bash
-      brew tap mongodb/brew
-      brew install mongodb-community@7.0
-      brew services start mongodb-community@7.0
-      ```
-    - Ubuntu: [Install MongoDB 7.x](https://www.mongodb.com/docs/v7.0/tutorial/install-mongodb-on-ubuntu/)
+This section explains how to provision four EC2 instances in a single VPC/subnet and install/run services directly on each VM (Python venv + systemd units via Makefile targets), matching the architecture and flow: Producers → Kafka → Processor → MongoDB.
 
-- **Java (for Kafka)**:  
-  macOS: `brew install openjdk@17`  
-  Ubuntu: `sudo apt-get install -y default-jre`
-
-- **Python 3.12+** with `venv`
-
----
-
-## 2. Running the pipeline
-
-From inside `gpu-token-analytics-pipeline/CA0/`:
-
-### Step 1 — Start Kafka (KRaft)
-```bash
-make kafka-download    # download Kafka 3.7.0
-make kafka-start       # format storage + start broker
-make topics-create     # create gpu.metrics.v1 + token.usage.v1
-```
-
-### Step 2 — Run the processor
-```bash
-make processor-venv
-make processor-run     # serves FastAPI on http://localhost:8080
-```
-
-### Step 3 — Run the producer
-```bash
-make producer-venv
-make producer-run      # emits ~20 test messages
-```
-
-### Step 4 — Verify everything
-```bash
-make mongo-counts      # show docs in gpu_metrics and token_usage
-make health            # GET /health from processor
-make status            # Kafka status + counts + health
-```
-
----
-
-### 3. Cleanup & Garbage Collection
-Stop and clean services when finished:
-```bash
-make down        # stop Kafka
-make clean       # stop Kafka + clear Python venvs/caches (keeps Mongo data)
-make gc          # clean + remove Kafka tarball + extracted dir (keeps Mongo data)
-make really-gc   # aggressive cleanup: gc + remove *.pyc
-```
-If Kafka fails with a cluster.id mismatch, reset its data:
-```bash
-make kafka-reset   # wipes local Kafka logs in .kafka-data
-make kafka-start   # reformat + restart
-make topics-create
-```
-
-Database cleanup
-```bash
-make db-clear      # drop ONLY collections gpu_metrics + token_usage in DB 'ca0'
-make db-drop       # drop the ENTIRE 'ca0' database
-make purge         # really-gc + db-drop (nuclear: wipes code artifacts AND DB)
-```
-
----
-
-### 4. Expected 
-- `make mongo-counts` should show:
-```bash
-20
-{ 
-  _id: ObjectId(...), 
-  ts: "...", 
-  model: "llama-3-70b", 
-  ..., 
-  cost_per_token: ... 
-}
-```
-- `make health` should return:
-```bash
-{"status":"ok"}
-```
-
----
-
-### 5. Config Summary (local)
-
-| Component | Version                           | Host/Port         | Notes                                    |
-| --------- | --------------------------------- | ----------------- | ---------------------------------------- |
-| Kafka     | 3.7.0 (Scala 2.13)                | localhost:9092    | KRaft mode, topics pre-created           |
-| MongoDB   | 7.0.x                             | localhost:27017   | Database: `ca0`                          |
-| Processor | FastAPI 0.112 / Uvicorn 0.30      | localhost:8080    | Env: `PRICE_PER_HOUR_USD=0.85`           |
-| Producer  | Python 3.12 + confluent-kafka 2.5 | localhost → Kafka | Emits `gpu.metrics.v1`, `token.usage.v1` |
-
-
----
-
-# AWS Deployment (CA0) — 4 VMs, no Docker
-
-This section explains how to provision **four EC2 instances** in a single VPC/subnet and install everything **directly on the VMs** (no containers), matching the architecture and flow: **Producers → Kafka → Processor → MongoDB**.
-
-> TL;DR: create the network, launch four small instances, lock down SGs, then run the **remote VM** targets from the root `Makefile`: `vm1-setup`, `vm2-setup`, `vm3-setup`, `vm4-setup`, etc.
+> TL;DR: create the network, launch four small instances, lock down SGs, then run the remote VM targets from the root Makefile: `vm1-setup`, `vm2-setup`, `vm3-setup`, `vm4-setup`, etc.
 
 ---
 
@@ -242,12 +130,12 @@ Create four SGs and add these **inbound** rules (outbound = allow all):
 
 ## 3) Launch 4 EC2 Instances (keep them small)
 
-| VM  | Role      | Type     | AMI (Ubuntu 22.04 LTS) | Private IP |
+| VM  | Role      | Type     | AMI (Ubuntu 24.04 LTS) | Private IP |
 | --- | --------- | -------- | ---------------------- | ---------- |
-| VM1 | Kafka     | t3.small | 22.04 LTS              | 10.0.1.10  |
-| VM2 | MongoDB   | t3.small | 22.04 LTS              | 10.0.1.11  |
-| VM3 | Processor | t3.micro | 22.04 LTS              | 10.0.1.12  |
-| VM4 | Producers | t3.micro | 22.04 LTS              | 10.0.1.13  |
+| VM1 | Kafka     | t3.small | 24.04 LTS              | 10.0.1.10  |
+| VM2 | MongoDB   | t3.small | 24.04 LTS              | 10.0.1.11  |
+| VM3 | Processor | t3.micro | 24.04 LTS              | 10.0.1.12  |
+| VM4 | Producers | t3.micro | 24.04 LTS              | 10.0.1.13  |
 
 * Root volume: **8 GB gp3** (default).
 * Attach each to the **subnet** above and its **role SG**.
@@ -283,7 +171,7 @@ Run these in **`CA0/` on your laptop** (they use SSH + `scp/rsync` and create `s
 ```bash
 make vm1-setup     # installs Java + Kafka 3.7.0, writes server.properties (advertises 10.0.1.10)
 make vm1-start     # enables & starts kafka.service
-make vm1-topics    # creates gpu.metrics.v1 + token.usage.v1
+make vm1-topics    # creates tokens (12 partitions)
 ```
 
 ### VM2 — MongoDB 7.0
@@ -318,12 +206,12 @@ make vm4-service   # creates producers.timer to run every minute
 
   ```
   KAFKA_BOOTSTRAP=10.0.1.10:9092
-  MONGO_URL=mongodb://10.0.1.11:27017/ca0
+  MONGODB_URI=mongodb://10.0.1.11:27017/ca0  # previously MONGO_URL
   PRICE_PER_HOUR_USD=0.85
   GPU_METRICS_SOURCE=seed
   ```
 * **Producer env** (provided to service):
-  `KAFKA_BOOTSTRAP=10.0.1.10:9092`, `TOPIC_METRIC=gpu.metrics.v1`, `TOPIC_TOKEN=token.usage.v1`, `GPU_SEED=/opt/producers/data/gpu_seed.json`
+  `KAFKA_BOOTSTRAP=10.0.1.10:9092`, `KAFKA_TOPIC=tokens`, `GPU_SEED=/opt/producers/data/gpu_seed.json`
 
 ---
 
