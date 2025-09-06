@@ -68,8 +68,8 @@ sudo systemctl restart ssh
 
 ### VM1: Kafka
 ```bash
-git clone https://github.com/<your-username>/CS5287.git
-cd CS5287/CA0/vm1-kafka
+git clone https://github.com/<your-username>/gpu-token-analytics-pipeline.git
+cd gpu-token-analytics-pipeline/CA0/vm1-kafka
 docker compose up -d
 ```
 
@@ -84,7 +84,7 @@ docker compose exec -T kafka kafka-topics.sh \
 
 ### VM2: MongoDB
 ```bash 
-cd CS5287/CA0/vm2-mongo
+cd gpu-token-analytics-pipeline/CA0/vm2-mongo
 docker compose up -d
 
 ```

@@ -1,0 +1,97 @@
+@startuml
+title CA0 Pipeline — Producers → Kafka (12 partitions) → Processor Group → MongoDB
+
+skinparam shadowing false
+skinparam handwritten false
+skinparam rectangle {
+  BorderColor #666
+}
+skinparam component {
+  BorderColor #666
+}
+skinparam node {
+  BorderColor #666
+}
+skinparam database {
+  BorderColor #666
+}
+
+rectangle "AWS VPC / Subnet (internal-only SG rules)" as vpc {
+  node "VM1: Kafka Broker (KRaft)\nUbuntu 22.04 LTS • Headless\nInstance: t3.small (x86) / t4g.small (arm64)\nRAM: 2 GB (min), 4–8 GB prod\nDisk: 20 GB gp3 SSD" as kafka {
+    component "Topic: tokens\n**12 partitions** (p0…p11)" as topic
+  }
+
+  node "VM3: Processor App (Consumers)\nUbuntu 22.04 LTS • Headless\nInstance: t3.micro / t4g.micro\nRAM: 1 GB\nDisk: 10 GB gp3 SSD" as proc {
+    component "Consumer Group\nReplicas: **C ≤ partitions**" as consumers
+  }
+
+  database "VM2: MongoDB 7.x\nUbuntu 22.04 LTS • Headless\nInstance: t3.small / t4g.small\nRAM: 2 GB (min), 4+ GB prod\nDisk: 30 GB gp3 SSD" as mongo
+
+  node "VM4: Producers (Data Ingest)\nUbuntu 22.04 LTS • Headless\nInstance: t3.micro / t4g.micro\nRAM: 1 GB\nDisk: 10 GB gp3 SSD" as producers
+}
+
+' --- Flows ---
+producers --> kafka : publish messages\n(P msg/s aggregate)
+kafka --> proc : assign partitions to\nconsumer replicas
+proc --> mongo : w writes/msg (often w=1)
+
+' --- Partitioning note ---
+note right of topic
+  **Partitions enable parallelism**
+  • One active consumer per partition within a group
+  • Start with **12 partitions** for CA0
+  • Increase if C hits the ceiling and lag grows
+end note
+
+' --- Kafka broker note ---
+note bottom of kafka
+  **Why these resources**
+  • JVM heap + Linux page cache → needs RAM
+  • 2 GB is demo-safe; 4–8 GB for production
+  • **gp3 SSD** for low-latency log appends
+  • Headless Ubuntu Server (LTS) for stability
+end note
+
+' --- MongoDB note ---
+note bottom of mongo
+  **Why SSD & RAM**
+  • WiredTiger favors RAM for working set
+  • **gp3 SSD** for random I/O durability
+  • 2 GB OK for lab; **4+ GB** recommended
+  • Bind to private IP, enable auth
+end note
+
+' --- Processor note ---
+note bottom of proc
+  **Processor sizing**
+  • Light Python/Node service → 1 GB is fine
+  • Scale replicas based on lag/CPU
+  • Respect limit: **replicas ≤ partitions**
+end note
+
+' --- Producers note ---
+note bottom of producers
+  **Producers**
+  • Scale by CPU/network demand
+  • Apply back-pressure so downstream SLOs hold
+end note
+
+' --- Scalability math & policies ---
+note as math
+  **Throughput & Sizing**
+  Consumers needed:
+    C = ceil(P * t_proc * S)
+    (P=msgs/s, t_proc=sec/msg, S=1.2–1.5)
+  DB headroom:
+    P * w ≤ W * H
+    (w=writes/msg, W=db writes/s, H≈0.7)
+
+  **Autoscaling signals (starting points)**
+  • Processor: scale out if **group lag > P·120s** for 5–10m OR CPU>70%;
+    scale in when lag≈0 for 15m AND CPU<40% (cooldowns 10–15m).
+  • MongoDB: alert/scale when p95 write latency > SLO (20–30ms) or CPU>70%.
+  • Partitions set the parallelism ceiling; raise partitions when needed.
+end note
+
+math .. proc
+@enduml
