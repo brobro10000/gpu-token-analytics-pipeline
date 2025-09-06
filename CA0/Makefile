@@ -181,7 +181,7 @@ vm2-shell:
 vm3-setup: vm3-sync
 	$(call ssh-run,$(VM3_HOST), \
 		cd $(REMOTE_CA0_DIR)/vm3-processor && \
-		make build \
+		make setup \
 	)
 
 vm3-build:
@@ -221,16 +221,34 @@ vm3-restart:
 		cd $(REMOTE_CA0_DIR)/vm3-processor && make restart \
 	)
 
+vm3-doctor:
+	$(call ssh-run,$(VM3_HOST), \
+		cd $(REMOTE_CA0_DIR)/vm3-processor && make doctor \
+	)
+
 # Producers VM (VM4)
 vm4-setup: vm4-sync
 	$(call ssh-run,$(VM4_HOST), \
 		cd $(REMOTE_CA0_DIR)/vm4-producers && \
-		make setup KAFKA_BOOTSTRAP=$(VM1_PRIV):9092 \
+		make setup \
 	)
 
+# run once, injecting the private bootstrap at runtime
 vm4-run:
 	$(call ssh-run,$(VM4_HOST), \
-		cd $(REMOTE_CA0_DIR)/vm4-producers && make run \
+		cd $(REMOTE_CA0_DIR)/vm4-producers && \
+		KAFKA_BOOTSTRAP=$(VM1_PRIV):9092 make run-once \
+	)
+
+vm4-logs:
+	$(call ssh-run,$(VM4_HOST), \
+		cd $(REMOTE_CA0_DIR)/vm4-producers && make logs \
+	)
+
+vm4-doctor:
+	$(call ssh-run,$(VM4_HOST), \
+		cd $(REMOTE_CA0_DIR)/vm4-producers && \
+		KAFKA_BOOTSTRAP=$(VM1_PRIV):9092 make doctor \
 	)
 
 # ---- Convenience SSH targets ----
