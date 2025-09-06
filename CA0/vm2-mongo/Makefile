@@ -1,53 +1,70 @@
-# ===== VM2: MongoDB Makefile =====
-# Usage:
-#   make up           # start Mongo
-#   make wait         # wait until mongod responds
-#   make init-indexes # run indexes.js (idempotent)
-#   make stats        # quick counts
-#   make down         # stop
-#   make down-v       # stop + remove volumes
-#   make shell        # open mongosh in the container
-#   make logs         # follow logs
-#   make help         # show help
+# ===== VM2: MongoDB (single node) =====
+SHELL := /bin/bash
+.ONESHELL:
 
-SERVICE ?= mongo
+SERVICE ?= mongo         # matches container_name
 DB      ?= ca0
 MONGO   ?= mongosh
 COMPOSE ?= docker compose
 
-.PHONY: help up wait down down-v ps logs init-indexes stats shell ping
+.PHONY: help setup up down down-v restart ps logs wait ping init-indexes stats shell fix-perms
 
 help:
 	@echo "Targets:"
-	@echo "  up            - Start MongoDB (detached)"
-	@echo "  wait          - Wait for Mongo to accept connections"
-	@echo "  init-indexes  - (Re)apply indexes from /docker-entrypoint-initdb.d/indexes.js"
-	@echo "  stats         - Show document counts in $(DB).gpu_metrics and $(DB).token_usage"
-	@echo "  ping          - db.adminCommand('ping') sanity check"
-	@echo "  ps            - Show container status"
-	@echo "  logs          - Tail MongoDB logs"
-	@echo "  shell         - Open an interactive mongosh inside the container"
-	@echo "  down          - Stop containers"
-	@echo "  down-v        - Stop containers and remove volumes (DANGEROUS: deletes data)"
+	@echo "  setup         - Install Docker/Compose if missing (idempotent)"
+	@echo "  up            - Start Mongo (detached)"
+	@echo "  wait          - Wait until Mongo responds to ping"
+	@echo "  ping          - db.adminCommand('ping')"
+	@echo "  init-indexes  - Apply /docker-entrypoint-initdb.d/indexes.js (idempotent)"
+	@echo "  stats         - Counts in $(DB).gpu_metrics and $(DB).token_usage"
+	@echo "  shell         - Interactive mongosh in the container"
+	@echo "  ps / logs     - Status / follow logs"
+	@echo "  down / down-v - Stop / stop+remove volumes"
+	@echo "  fix-perms     - Chown ./mongo-data to uid 999 (host-dir setups)"
 
-up: ## Start MongoDB
+setup:
+	if ! command -v docker >/dev/null 2>&1; then
+		sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+		sudo apt-get update -y
+		sudo apt-get install -y ca-certificates curl gnupg
+		sudo install -m 0755 -d /etc/apt/keyrings
+		curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+		echo "deb [arch=$$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $$(. /etc/os-release && echo $$VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+		sudo apt-get update -y
+		sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+		sudo usermod -aG docker $$USER || true
+	fi
+
+up:
 	$(COMPOSE) up -d
 	@echo "Mongo starting... try 'make wait' next."
 
-wait: ## Wait until Mongo responds
+wait:
 	@echo "Waiting for Mongo to be ready..."
-	@for i in $$(seq 1 30); do \
-		$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval "db.adminCommand('ping').ok" >/dev/null 2>&1 && \
-		{ echo "Mongo is ready."; exit 0; }; \
+	for i in $$(seq 1 30); do \
+		if $(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval "db.adminCommand('ping').ok" | grep -q 1; then \
+			echo "Mongo is ready."; exit 0; \
+		fi; \
 		sleep 2; \
 	done; \
 	echo "Timed out waiting for Mongo." >&2; exit 1
 
-down: ## Stop containers
-	$(COMPOSE) down
+ping:
+	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.adminCommand("ping")'
 
-down-v: ## Stop containers and remove volumes (DANGEROUS)
-	$(COMPOSE) down -v
+init-indexes:
+	$(COMPOSE) exec -T $(SERVICE) bash -lc 'test -f /docker-entrypoint-initdb.d/indexes.js'
+	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --file /docker-entrypoint-initdb.d/indexes.js
+	@echo "Indexes applied."
+
+stats:
+	@echo "$(DB).gpu_metrics:"
+	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").gpu_metrics.countDocuments()'
+	@echo "$(DB).token_usage:"
+	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").token_usage.countDocuments()'
+
+shell:
+	$(COMPOSE) exec $(SERVICE) $(MONGO)
 
 ps:
 	$(COMPOSE) ps
@@ -55,38 +72,17 @@ ps:
 logs:
 	$(COMPOSE) logs -f $(SERVICE)
 
-init-indexes: ## (Re)apply indexes (idempotent)
-	# Ensure the indexes script exists in the container path
-	$(COMPOSE) exec -T $(SERVICE) bash -lc 'test -f /docker-entrypoint-initdb.d/indexes.js'
-	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --file /docker-entrypoint-initdb.d/indexes.js
-	@echo "Indexes applied."
-
-stats: ## Quick check of counts
-	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").gpu_metrics.countDocuments()'
-	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").token_usage.countDocuments()'
-
-ping: ## db.adminCommand('ping') check
-	$(COMPOSE) exec -T $(SERVICE) $(MONGO) --quiet --eval 'db.adminCommand("ping")'
-
-shell: ## Open interactive mongosh in the container
-	$(COMPOSE) exec $(SERVICE) $(MONGO)
-=======
-DB=ca0
-MONGO=mongosh
-
-.PHONY: up down ps logs init-indexes stats
-up:              ## Start MongoDB
-	docker compose up -d
 down:
-	docker compose down
-ps:
-	docker compose ps
-logs:
-	docker compose logs -f mongo
+	$(COMPOSE) down
 
-init-indexes:    ## (Re)apply indexes (idempotent)
-	docker compose exec -T mongo $(MONGO) --file /docker-entrypoint-initdb.d/indexes.js
+down-v:
+	$(COMPOSE) down -v
 
-stats:           ## Quick check of counts
-	docker compose exec -T mongo $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").gpu_metrics.countDocuments()'
-	docker compose exec -T mongo $(MONGO) --quiet --eval 'db.getSiblingDB("$(DB)").token_usage.countDocuments()'
+fix-perms:  ## only needed with host-dir data (./mongo-data)
+	sudo mkdir -p ./mongo-data
+	sudo chown -R 999:999 ./mongo-data
+	sudo chmod -R 775 ./mongo-data
+
+restart:
+	$(COMPOSE) down
+	$(COMPOSE) up -d

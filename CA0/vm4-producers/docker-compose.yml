@@ -1,7 +1,22 @@
 services:
   producer:
-    build: .
-    restart: "no"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"           # one-shot → exits when done
+    env_file: .env
     environment:
-      - KAFKA_BOOTSTRAP=10.0.1.10:9092
-      - GPU_SEED=/data/gpu_seed.json
+      - KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+      - GPU_SEED=${GPU_SEED:-/data/gpu_seed.json}
+      - BATCH=${BATCH:-20}
+      - SLEEP_SEC=${SLEEP_SEC:-0.5}
+      - TOPIC_METRIC=${TOPIC_METRIC:-gpu.metrics.v1}
+      - TOPIC_TOKEN=${TOPIC_TOKEN:-token.usage.v1}
+      - HOSTNAME=${HOSTNAME:-vm4}
+    user: "10001:10001"
+    # (optional) quick health probe to your Kafka broker
+    healthcheck:
+      test: ["CMD-SHELL", "python - <<'PY'\nimport os,socket;h,p=os.environ['KAFKA_BOOTSTRAP'].split(':');s=socket.socket();s.settimeout(2);s.connect((h,int(p)));s.close()\nPY"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

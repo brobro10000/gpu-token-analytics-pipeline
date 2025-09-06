@@ -99,7 +99,7 @@ This guide explains how to test the **Kafka → Processor → Producer → Mongo
 
 ## 2. Running the pipeline
 
-From inside `CS5287/CA0/`:
+From inside `gpu-token-analytics-pipeline/CA0/`:
 
 ### Step 1 — Start Kafka (KRaft)
 ```bash
