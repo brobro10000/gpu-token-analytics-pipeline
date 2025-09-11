@@ -1,0 +1,182 @@
+@startuml
+title CA1 Mapping — Terraform ONLY → IaaS for CA0 Four-VM Stack (Taller)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment left
+skinparam nodesep 80
+skinparam ranksep 120
+
+' ===================== Terraform (only) =====================
+package "Terraform (Only)" as TFONLY {
+  component TFCORE as "Terraform Core"
+  component MODS   as "Modules: network, compute, security, bootstrap"
+  component VARS   as "Variables: *.tfvars"
+  component STATE  as "Remote State: S3 + DynamoDB lock"
+  component PIPE   as "Automation: make targets / CI plan+apply+destroy"
+  component VALID  as "Validation: null_resource.smoke_test (local-exec/remote-exec)"
+  component DOCS   as "Docs & Outputs: README + terraform output"
+}
+
+note bottom of TFCORE
+CA1-1 tooling, CA1-2 idempotency
+Core AWS provider + resources
+end note
+
+note bottom of MODS
+CA1-2 infra as code
+Reusable modules for VPC, SGs, EC2, IAM, secrets, bootstrap
+end note
+
+note bottom of VARS
+CA1-3 parameterization
+region, cidr, instance_types, counts,
+ami_id (optional), topic_name=tokens, partitions=12,
+admin_cidr, mongo_user_secret_id
+end note
+
+note bottom of STATE
+CA1-2 reproducibility
+Backend: S3 per env; Lock: DynamoDB
+end note
+
+note bottom of PIPE
+CA1-5 automation
+make deploy / make destroy or CI jobs:
+fmt → validate → tflint/tfsec → plan → apply
+end note
+
+note bottom of VALID
+CA1-6 pipeline validation
+null_resource runs smoke_test:
+1) produce to Kafka
+2) check consumer lag
+3) verify Mongo docs
+Collect stdout/exit codes
+end note
+
+note bottom of DOCS
+CA1-7 documentation
+README steps; attach outputs.json;
+summarize IPs, topic, mongo_uri, validation results
+end note
+
+PIPE --> TFCORE : plan/apply/destroy
+TFCORE --> STATE : backend/lock
+DOCS <- TFCORE : terraform output
+DOCS <- VALID  : results/logs
+
+' ===================== IaaS (AWS) — provisioned by Terraform =====================
+package "IaaS (AWS)" as IAAS {
+
+  package "Networking" as NET {
+    node VPC as "VPC / Subnet / Routes / Security Groups"
+  }
+  note bottom of NET
+CA1-2 network + SGs in code
+CA1-3 region/CIDR/ports via vars
+Terraform creates: one subnet (e.g., 10.0.1.0/24),
+SG for 9092/27017/22/8080 with least-privilege rules
+end note
+
+  package "Identity & Secrets" as IDSEC {
+    component IAM as "IAM Roles / Instance Profiles"
+    component SECRETS as "AWS Secrets Manager or SSM Param Store (+KMS)"
+  }
+  note bottom of IDSEC
+CA1-4 secure secrets (no plaintext)
+Terraform creates/refs: instance profiles,
+secret ARNs, KMS keys; supplies creds to user_data
+end note
+
+  package "Compute — Four EC2 Instances (user_data bootstrap)" as CMP {
+    node VM1 as "VM1 kafka-zk
+Kafka 9092; ZK 2181(local)
+cloud-init installs & starts"
+    node VM2 as "VM2 mongodb
+27017; collections: gpu_metrics, token_usage
+cloud-init installs & creates users/roles"
+    node VM3 as "VM3 processor
+Docker FastAPI 8080
+cloud-init pulls image & runs container"
+    node VM4 as "VM4 producers
+Docker 1–2 producers
+cloud-init pulls images & runs"
+  }
+  note bottom of CMP
+CA1-2 instances + services fully in TF
+CA1-3 instance types/count/AMI via vars
+CA1-5 destroy removes all
+Terraform uses user_data/cloud-init and remote-exec to install/start services
+end note
+
+  package "Messaging & Storage Targets" as MSTR {
+    node KAFKA as "Kafka topic: tokens (p=12)"
+    database MONGO as "MongoDB target (VM2)"
+  }
+  note bottom of MSTR
+CA1-2 topic creation scripted in TF bootstrap
+CA1-3 partitions/retention configurable
+Used in CA1-6 smoke test
+end note
+
+  package "Observability & Access" as OBS {
+    component LOGS as "Logs: syslog/journalctl (optional CloudWatch agent)"
+    component HEALTH as "Processor /health (VM3:8080)"
+    component SSH   as "SSH 22 (key-only) from Admin CIDR"
+  }
+  note bottom of OBS
+CA1-6 capture logs/health during validation
+CA1-7 attach log excerpts in README
+Terraform SG restricts admin ingress
+end note
+}
+
+' ===================== Terraform → IaaS provisioning edges =====================
+TFCORE --> VPC     : create VPC/Subnet/SGs
+TFCORE --> IAM     : create roles/profiles
+TFCORE --> SECRETS : create/attach secrets (KMS)
+TFCORE --> VM1     : ec2 + user_data
+TFCORE --> VM2     : ec2 + user_data
+TFCORE --> VM3     : ec2 + user_data
+TFCORE --> VM4     : ec2 + user_data
+TFCORE --> KAFKA   : bootstrap script creates topic
+DOCS   <-  TFCORE  : outputs (IPs, SG IDs, topic, mongo_uri)
+
+' ===================== Service wiring (CA0 topology, enforced by SGs) =====================
+VM4 --> VM1 : produce tokens (tcp/9092)   \nSG: allow from VM4 only
+VM3 --> VM1 : consume tokens (tcp/9092)   \nSG: allow from VM3 only
+VM3 --> VM2 : write docs (tcp/27017)      \nSG: allow from VM3 only
+
+actor Admin
+Admin --> VM3 : HTTP 8080 (health)        \nSG: from Admin CIDR only
+Admin --> VM1 : SSH 22 (key-only)         \nSG: from Admin CIDR only
+Admin --> VM2 : SSH 22 (key-only)         \nSG: from Admin CIDR only
+Admin --> VM4 : SSH 22 (key-only)         \nSG: from Admin CIDR only
+
+' ===================== Validation path (Terraform-driven) =====================
+VALID --> VM1 : produce sample (kafka-console-producer)
+VALID --> VM3 : check consumer logs / lag
+VALID --> VM2 : verify Mongo documents
+DOCS  <- VALID : results + screenshots
+
+' ===================== Assignment Key & What Terraform Provisions =====================
+note bottom
+CA1 mapping with Terraform only:
+(1) Tooling: Terraform selected (single IaC)
+(2) Idempotency: VPC, SGs, EC2(4x), IAM, secrets, topics installed via user_data/provisioners; reruns stable; destroy cleans all
+(3) Parameterization: region, cidr, vm sizes, AMI, topic name, partitions (12), admin_cidr, secret ids via tfvars
+(4) Secrets: AWS Secrets Manager or SSM + KMS; user_data pulls at runtime; no plaintext in repo
+(5) Automation: make/CI targets wrap terraform plan/apply/destroy for one-command UX
+(6) Validation: null_resource runs smoke_test to produce → consume → persist; collects logs/health
+(7) Documentation: README with steps; terraform outputs summarize IPs/URIs/topics; attach run logs
+
+Terraform provisions:
+- Networking: VPC/Subnet/Routes/SGs
+- Identity & Secrets: IAM roles/profiles, Secrets Manager/SSM + KMS keys
+- Compute: 4 EC2 instances with cloud-init; service install/start via user_data and (optional) remote-exec
+- Messaging/Storage: Kafka topic creation script; Mongo DB user/init script
+- Observability/Access: SG rules, optional CloudWatch agent, health endpoint reachability
+end note
+
+@enduml

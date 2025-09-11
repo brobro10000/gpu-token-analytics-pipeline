@@ -1,0 +1,205 @@
+@startuml
+title CA1 Mapping — IaC → IaaS for CA0 Four-VM Stack (Detailed, Taller)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment left
+skinparam nodesep 80
+skinparam ranksep 120
+
+' ===================== IaC (collapsed tooling) =====================
+package "IaC (Collapsed Tooling)" as IAC {
+  component TF    as "Terraform (core)"
+  component ANS   as "Ansible (core)"
+  component PKR   as "Packer (optional)"
+  component VARS  as "Variables (tfvars/inventory)"
+  component CI    as "CI/CD (fmt/lint/plan/apply)"
+  component STATE as "Remote State (S3+DynamoDB)"
+  component VAL   as "Validation (smoke_test.sh)"
+  component DOCS  as "Docs & Outputs (README, logs, summary)"
+}
+
+note bottom of TF
+CA1-1: choose tooling (Terraform)
+CA1-2: idempotent infra modules
+CA1-3: parameters via variables
+CA1-5: deploy/destroy targets
+Provisions: VPC, SGs, 4 EC2s, IAM, volumes
+Outputs: IPs, URIs, topic names
+end note
+
+note bottom of ANS
+CA1-1: choose tooling (Ansible)
+CA1-2: idempotent service install
+CA1-3: templated vars (group_vars)
+Provisions: Kafka/ZK, MongoDB, Processor, Producers
+Runs: roles, handlers, --check for dry runs
+end note
+
+note bottom of PKR
+CA1-2: stable base AMI reduces drift
+CA1-3: param image tags (cuda_version)
+Optional: bake Docker + agents
+end note
+
+note bottom of VARS
+CA1-3: parameterization & flexibility
+Examples:
+  region, az, cidr
+  vm_types, counts
+  kafka_topic=tokens
+  kafka_partitions=12
+  mongo_user/secret_id
+end note
+
+note bottom of CI
+CA1-2: reproducible plans
+CA1-5: one-command pipelines
+Steps: terraform fmt/tflint/tfsec → plan → apply
+end note
+
+note bottom of STATE
+CA1-2: reproducible state mgmt
+S3 backend per env; DynamoDB lock
+Workspaces: dev/stg/prod
+end note
+
+note bottom of VAL
+CA1-6: pipeline validation
+1) produce sample to Kafka
+2) observe consumer lag
+3) verify Mongo writes
+Collect logs/screenshots
+end note
+
+note bottom of DOCS
+CA1-7: README + outputs + run logs
+README: prereqs, deploy, destroy, tests
+Outputs: IPs, topic, mongo_uri, results
+end note
+
+CI --> TF : plan/apply/destroy
+TF --> STATE : backend/lock
+CI --> VAL  : run after apply
+DOCS <- TF  : outputs.json
+DOCS <- VAL : results/logs
+
+' ===================== IaaS (AWS) — provisioned by IaC =====================
+package "IaaS (AWS)" as IAAS {
+
+  package "Networking" as NET {
+    node VPC as "VPC / Subnet / Routes / Security Groups"
+  }
+  note bottom of NET
+CA1-2: declare network + firewall rules in code
+CA1-3: region/CIDR/ports param-driven
+Provisioned: single subnet (e.g., 10.0.1.0/24), SGs for 9092/27017/22/8080
+end note
+
+  package "Identity & Secrets" as IDSEC {
+    component IAM as "IAM Roles / Instance Profiles"
+    component SECRETS as "Secrets Manager or SSM Param Store (+KMS)"
+  }
+  note bottom of IDSEC
+CA1-4: secure secrets handling (no plaintext in repo)
+CA1-2: least privilege IAM policies
+Provisioned: instance profiles, secret ARNs, KMS keys
+end note
+
+  package "Compute (4 VMs)" as CMP {
+    node VM1 as "VM1 kafka-zk
+Kafka 9092; ZK 2181(local)"
+    node VM2 as "VM2 mongodb
+27017; gpu_metrics, token_usage"
+    node VM3 as "VM3 processor
+Docker FastAPI 8080"
+    node VM4 as "VM4 producers
+Docker 1-2 producers"
+  }
+  note bottom of CMP
+CA1-2: VMs + packages/services immutable via code
+CA1-3: vm types/count/AMI via variables
+CA1-5: destroy removes all instances
+Provisioned: EC2 + volumes; Ansible installs services and configures UFW to mirror SGs
+end note
+
+  package "Platform Services" as PLAT {
+    node KAFKA as "Kafka topic: tokens (p=12)"
+  }
+  note bottom of PLAT
+CA1-2: topic creation via code or Ansible task
+CA1-3: partitions, retention, acks param-driven
+Used by CA1-6 validation (produce/consume)
+end note
+
+  package "Storage" as STOR {
+    database MONGO as "MongoDB 7.x on VM2
+collections: gpu_metrics, token_usage"
+  }
+  note bottom of STOR
+CA1-2: DB service install + users/roles via Ansible
+CA1-3: storage size/type (gp3) param-driven
+Used by CA1-6 to verify writes
+end note
+
+  package "Observability" as OBS {
+    component LOGS as "CloudWatch/Local Logs"
+    component HEALTH as "Processor /health (8080)"
+  }
+  note bottom of OBS
+CA1-6: capture logs & health output for validation
+CA1-7: attach logs/screens to README
+end note
+}
+
+' ===================== IaC -> IaaS provisioning edges =====================
+TF   --> VPC     : create VPC/Subnet/SGs
+TF   --> IAM     : roles/profiles
+TF   --> SECRETS : secret refs (KMS)
+TF   --> VM1     : EC2 create
+TF   --> VM2     : EC2 create
+TF   --> VM3     : EC2 create
+TF   --> VM4     : EC2 create
+
+ANS  --> VM1     : install kafka + zk; configure 9092
+ANS  --> VM2     : install mongodb; bind 27017; users/roles
+ANS  --> VM3     : deploy processor container; expose 8080
+ANS  --> VM4     : deploy producer containers
+
+DOCS <- TF       : IPs, SG IDs, topic, mongo_uri
+
+' ===================== Service wiring (CA0 topology, enforced by SGs) =====================
+VM4 --> VM1 : produce tokens (tcp/9092)   \nSG: allow from producers only
+VM3 --> VM1 : consume tokens (tcp/9092)   \nSG: allow from processor only
+VM3 --> VM2 : write docs (tcp/27017)      \nSG: allow from processor only
+
+actor Admin
+Admin --> VM3 : HTTP 8080 (health)        \nSG: from Admin IP only
+Admin --> VM1 : SSH 22 (key-only)         \nSG: from Admin IP only
+Admin --> VM2 : SSH 22 (key-only)         \nSG: from Admin IP only
+Admin --> VM4 : SSH 22 (key-only)         \nSG: from Admin IP only
+
+' ===================== Validation & Deliverables =====================
+VAL --> KAFKA : produce sample event (tokens)
+VAL --> MONGO : verify documents (counts/fields)
+VAL --> LOGS  : fetch broker/processor logs
+DOCS <-  VAL  : results + screenshots
+
+' ===================== Assignment Key & What IaC Provisions =====================
+note bottom
+CA1 Requirement Mapping:
+(1) Tooling: Terraform + Ansible (Packer optional)
+(2) Idempotency: infra (VPC, SGs, EC2), services (Kafka, Mongo, Processor, Producers) fully defined in code; reruns stable; destroy cleans all
+(3) Parameterization: region, cidr, vm sizes, AMI, topic name, partitions (default 12), creds via variables
+(4) Secrets: AWS Secrets Manager or SSM + KMS; no plaintext in repo
+(5) Automation: CI pipeline or make targets for apply/destroy; terraform plan before apply
+(6) Validation: smoke_test.sh produces to Kafka, observes consumption, verifies Mongo writes; logs/health captured
+(7) Documentation: README with prereqs, deploy/destroy/test steps; attach outputs and run logs
+
+IaC Provisioning Summary:
+- Terraform: VPC/Subnet/Routes/SGs; IAM roles; EC2(4x); volumes; secret refs; outputs
+- Ansible: install/configure Kafka/ZK (VM1), Mongo (VM2), Processor (VM3), Producers (VM4); UFW rules
+- (Optional) Packer: stable base AMI with Docker/agents to reduce bootstrap time
+end note
+
+@enduml
