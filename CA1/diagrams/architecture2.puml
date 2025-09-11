@@ -1,0 +1,112 @@
+@startuml
+title GPU Analytics (Simplified) — IaC + IaaS + SDI + Apps
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+' -------- IaC -------------------------------------------------
+package "IaC" as IAC {
+  component TF  as "Terraform"
+  component PKR as "Packer"
+  component ANS as "Ansible"
+  component GIT as "Helm/ArgoCD"
+}
+note right of IAC
+IaC responsibilities:
+- TF: VPC, SG, IAM, EKS/EC2, storage
+- PKR: GPU AMIs (CUDA/driver)
+- ANS: node converge, agents
+- GIT: deploy/sync K8s apps
+end note
+
+' -------- IaaS ------------------------------------------------
+package "IaaS (AWS)" as IAAS {
+  node VPC  as "VPC/Subnets/SG"
+  node EKS  as "EKS"
+  node GGPU as "EC2 GPU ASG"
+  node GNOD as "EC2 General ASG"
+  node MSK  as "MSK or EC2 Kafka"
+  database STOR as "EBS/EFS/FSx"
+}
+note right of IAAS
+Cloud primitives:
+- Network: VPC/Subnets/Routes/SG
+- Compute: EKS control plane, EC2 nodes
+- Storage: EBS/EFS/FSx via CSI
+- Kafka: MSK (managed) or EC2 brokers
+- Access: SSM, IAM/IRSA
+end note
+
+' -------- SDI -------------------------------------------------
+package "SDI (Kubernetes)" as SDI {
+  node K8S as "Kubernetes Cluster" {
+    component GPUO as "GPU Operator"
+    component STRZ as "Strimzi"
+    component MOP  as "Mongo Operator"
+    component AUTO as "Autoscaler"
+  }
+}
+note right of SDI
+Software-defined orchestration:
+- GPUO: device plugin/scheduling
+- STRZ: Kafka operator (topics/brokers)
+- MOP: MongoDB stateful mgmt
+- AUTO: HPA/Cluster autoscaler/Karpenter
+end note
+
+' -------- Apps/Data -------------------------------------------
+package "Apps/Data" as APP {
+  node PROD as "GPU Producer"
+  node KAF  as "Kafka"
+  node PROC as "Processor"
+  database MONG as "MongoDB"
+}
+note right of APP
+Data flow:
+- Producer publishes metrics/usage
+- Kafka partitions scale throughput
+- Processor consumes/joins
+- Mongo stores results (OLTP)
+end note
+
+' ===== IaC → IaaS / SDI wiring =====
+TF  --> VPC
+TF  --> EKS
+TF  --> GGPU
+TF  --> GNOD
+TF  --> STOR
+TF  --> MSK
+PKR --> GGPU : AMI
+ANS --> GGPU : converge
+GIT --> K8S  : sync apps
+
+' ===== IaaS hosts SDI =====
+EKS -- K8S
+GGPU -- K8S
+GNOD -- K8S
+
+' ===== Operators manage apps =====
+K8S -- GPUO
+K8S -- STRZ
+K8S -- MOP
+K8S -- AUTO
+
+' ===== App/data flow =====
+GPUO -- PROD : schedule on GPU nodes
+STRZ -- KAF  : manage brokers/topics
+MOP  -- MONG : manage replicas
+PROD --> KAF : publish
+KAF  --> PROC: consume
+PROC --> MONG: write
+
+' ===== Notes: scalability / security =====
+note bottom
+Scalability:
+- Increase Kafka partitions, Processor replicas
+- Autoscaler adds/removes EC2 nodes (GGPU/GNOD)
+Security:
+- SGs restrict 9092 (Kafka) and 27017 (Mongo)
+- Use IRSA for pod AWS access; SSM for node access
+end note
+
+@enduml
