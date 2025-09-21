@@ -1,0 +1,10 @@
+#cloud-config
+hostname: vm3-processor
+write_files:
+  - path: /opt/processor.env
+    content: |
+      PRICE_PER_HOUR_USD=${PRICE_PER_HOUR_USD}
+      KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+      MONGO_URL=${MONGO_URL}
+runcmd:
+  - echo "processor placeholder bootstrap" >> /etc/motd

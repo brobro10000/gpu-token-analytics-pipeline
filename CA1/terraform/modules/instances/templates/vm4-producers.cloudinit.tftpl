@@ -1,0 +1,8 @@
+#cloud-config
+hostname: vm4-producers
+write_files:
+  - path: /opt/producers.env
+    content: |
+      KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+runcmd:
+  - echo "producers placeholder bootstrap" > /etc/motd
