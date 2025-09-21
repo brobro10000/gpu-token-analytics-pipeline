@@ -1,0 +1,46 @@
+@startuml
+title CA1 – Terraform Apply → Docker Compose Bootstrap (Per VM)
+
+skinparam shadowing false
+skinparam monochrome true
+skinparam ArrowColor #444444
+skinparam ArrowThickness 1.1
+skinparam wrapWidth 200
+skinparam maxMessageSize 180
+
+actor Engineer as E
+participant "Terraform CLI" as TF
+participant "AWS API" as AWS
+participant "EC2 VM1\nkafka" as VM1
+participant "EC2 VM2\nmongodb" as VM2
+participant "EC2 VM3\nprocessor" as VM3
+participant "EC2 VM4\nproducers" as VM4
+
+E -> TF: terraform init
+E -> TF: terraform plan (VPC, SGs, 4 EC2s, user-data)
+E -> TF: terraform apply -auto-approve
+TF -> AWS: Create VPC/Subnet/Routes
+TF -> AWS: Create SGs (kafka/mongo/processor/producers)
+TF -> AWS: Launch EC2 (VM1..VM4) with user-data (cloud-init)
+
+AWS -> VM1: Execute user-data (Docker + Compose; fetch CA0/vm1-kafka)
+VM1 -> VM1: docker compose up -d (Kafka 3.7.0 KRaft)\nCreate topics: gpu.metrics.v1, token.usage.v1
+
+AWS -> VM2: Execute user-data (Docker + Compose; fetch CA0/vm2-mongo)
+VM2 -> VM2: docker compose up -d (MongoDB 7.0.x)\nInit DB ca0 + optional indexes
+
+AWS -> VM3: Execute user-data (Docker + Compose; fetch CA0/vm3-processor)
+VM3 -> VM3: docker compose up -d (FastAPI/Uvicorn :8080)\nENV: KAFKA_BOOTSTRAP, MONGO_URL, PRICE_PER_HOUR_USD
+
+AWS -> VM4: Execute user-data (Docker + Compose; fetch CA0/vm4-producers)
+VM4 -> VM4: docker compose up -d (Python producer(s))\nTimer/cron optional for periodic emits
+
+VM4 -> VM1: Produce to :9092 (two topics)
+VM3 -> VM1: Consume from :9092
+VM3 -> VM2: Write to :27017
+E -> VM3: curl http://<vm3>:8080/health => 200 OK
+E -> TF: terraform output (IPs, URIs)
+
+E -> TF: terraform destroy (teardown)
+
+@enduml

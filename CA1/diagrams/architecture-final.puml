@@ -1,0 +1,91 @@
+@startuml
+title CA1 – Terraform + Docker-First Architecture (Parity with CA0 pipeline)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam wrapWidth 220
+skinparam defaultTextAlignment left
+skinparam nodesep 35
+skinparam ranksep 25
+skinparam ArrowColor #444444
+skinparam ArrowThickness 1.1
+
+legend left
+== Legend ==
+<<tf>> Terraform-managed resource
+<<docker>> Docker/Compose-managed service(s)
+Solid arrows = runtime data flow
+Dashed arrows = IaC/bootstrap/user-data
+end legend
+
+actor "Engineer (Admin IP)" as Admin
+
+package "Terraform Project" {
+  rectangle "module.vpc" as MOD_VPC <<tf>>
+  rectangle "module.security_groups" as MOD_SG <<tf>>
+  rectangle "module.instances" as MOD_INST <<tf>>
+  rectangle "remote state (optional)" as MOD_STATE
+}
+
+node "AWS (us-east-1)" as AWS {
+  frame "VPC 10.0.0.0/16 | Subnet 10.0.1.0/24" as VPC {
+    node "VM1 kafka\n10.0.1.10" as VM1 {
+      component "Kafka 3.7.0 (KRaft)\nPorts: 9092\nTopics:\n- gpu.metrics.v1\n- token.usage.v1" as KAFKA <<docker>>
+    }
+    node "VM2 mongodb\n10.0.1.11" as VM2 {
+      database "MongoDB 7.0.x\nDB: ca0\nCollections:\n- gpu_metrics\n- token_usage" as MONGO <<docker>>
+    }
+    node "VM3 processor\n10.0.1.12" as VM3 {
+      component "FastAPI 0.112 + Uvicorn 0.30\n/health :8080\nENV:\n- KAFKA_BOOTSTRAP=10.0.1.10:9092\n- MONGO_URL=mongodb://10.0.1.11:27017/ca0\n- PRICE_PER_HOUR_USD=0.85\n- GPU_METRICS_SOURCE=seed" as PROCESSOR <<docker>>
+    }
+    node "VM4 producers\n10.0.1.13" as VM4 {
+      component "Python 3.12 + confluent-kafka 2.5\nEmits:\n- gpu.metrics.v1\n- token.usage.v1" as PRODUCERS <<docker>>
+    }
+  }
+
+  rectangle "sg-kafka" as SGK <<tf>>
+  rectangle "sg-mongo" as SGM <<tf>>
+  rectangle "sg-processor" as SGP <<tf>>
+  rectangle "sg-producers" as SGPR <<tf>>
+}
+
+' Terraform relationships
+MOD_VPC --> VPC
+MOD_SG --> SGK
+MOD_SG --> SGM
+MOD_SG --> SGP
+MOD_SG --> SGPR
+MOD_INST --> VM1
+MOD_INST --> VM2
+MOD_INST --> VM3
+MOD_INST --> VM4
+
+' Security group intents (ingress)
+SGPR -[#grey,dashed]-> VM4 : SSH 22 from Admin IP
+SGP  -[#grey,dashed]-> VM3 : 8080 from Admin IP\n22 from Admin IP
+SGM  -[#grey,dashed]-> VM2 : 27017 from sg-processor\n22 from Admin IP
+SGK  -[#grey,dashed]-> VM1 : 9092 from sg-processor + sg-producers\n22 from Admin IP
+
+' Data flow (runtime)
+PRODUCERS --> KAFKA : Produce token/gpu events :9092
+PROCESSOR --> KAFKA : Consume topics :9092
+PROCESSOR --> MONGO : Persist gpu_metrics + token_usage :27017
+Admin --> PROCESSOR : GET /health :8080
+
+' Bootstrap
+cloud "user-data (cloud-init)\n- Install Docker + Compose\n- Fetch repo CA0/VM folders\n- docker compose up -d per VM\n- Write .env files\n- Create topics (VM1)\n- Optional: UFW mirror SGs" as UD
+MOD_INST ..> UD
+UD ..> VM1
+UD ..> VM2
+UD ..> VM3
+UD ..> VM4
+
+note bottom of VM1
+Kafka 3.7.0 (Scala 2.13)\nKRaft mode (no ZooKeeper)\nadvertised.listeners=PLAINTEXT://10.0.1.10:9092
+end note
+
+note bottom of VM2
+MongoDB 7.0.x\nOptional indexes: ca0.gpu_metrics(ts:1)
+end note
+
+@enduml
