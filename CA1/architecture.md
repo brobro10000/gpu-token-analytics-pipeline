@@ -4,61 +4,12 @@ Context
 - Recreate CA0 via code (Terraform/Ansible/etc.), idempotent, parameterized, secure secrets, and one-command deploy/destroy.
 - Pipeline unchanged: Producers → Kafka → Processor → MongoDB (same as CA0), but fully automated.
 
-Diagram (PlantUML)
-![PlantUML](https://www.plantuml.com/plantuml/svg/LLFTRXez4BttKyp7nITG8110oiz55KhKAgfeesp4LM-6tO6uUEsjFIQYLQK-H9-mJz8nBDdDrNfypioUEPwv3OoUOsdKV_nC9S5EhpnQLgpP4Cnd5p20Uvp3BB8haQc0vI90zucynxNp9Pp1p0QzCjI3lx__m3sJHzREmjgxKWgCb0fRRIlqM49uniAzQBk1DPf0BQHqrkNFaaB0FhQHt9MLisGvuxr8yfGpseqXfJ1dvw5pHpiohYBV0GmWaQemt-A6e9EKprr17VYfeAa4dLVzNsrt-J3lG_Qndphh7MeyVNZBhZiKxhqDZCR0_rBMhlKcUZgcp3vdRtCooZrnW0LQaUBJVp0Q7cQBOqAsEF2DeJpP5Q2pH1-4vcaZSH-2_a6X3-mgdQSlRcfrozbZfdufPQKnwCoDYmLq7mzPmookB77lsE-Hi5nSm1RNMpmaIzH2nidtZIjMDJPkOHEelCif1EThTD92fmajOau-rEWqQHBtOJ1u9mx23V3ha61LcVsmeC3UxPM0YIDIckEuEKwQuxIfA0PBIJo-nA0ok5yvjrLoVIeciAwVvrFg5xetrwFhSQ_56RSuYzJvtNjXZIz75vTjsaHe1LN6xU7Xv87mhaPNepPjAZGVhN1g9vJA5d1-VXAhxJTvN90vA89AhoPOigOv2qyfATHgeROL3je5cxImtDaGopRMjFNYDHCSUqcp8S7ACRjIfIL-fEzHUoh9ShXHij85oQIoXEc7EnraUD9QdW4JUjbHAwI7j7_4v6KI2zYXroZU1q5EmxtJA8CyF4osN7-9N4Mv5f4b-hriIIZTbgHcO4MsW2HBgLivnjBy0m00)
-```plantuml
-@startuml
-title CA1 - IaC Automated VMs (Terraform + Ansible) — Iteration from CA0
-
-skinparam shadowing false
-skinparam monochrome true
-skinparam componentStyle rectangle
-
-actor "Developer" as Dev
-package "IaC Code" {
-  component "Terraform\n(VPC, SG, VMs)" as TF
-  component "Ansible\n(Install & Configure)" as ANS
-  component "Secrets Manager\n(Vault/SM)" as SM
-  collections "Vars\n(region, sizes, topics, tags)" as VARS
-}
-
-node "Cloud (Region/Subnet)" {
-  node "VM1 kafka" as VM1
-  node "VM2 mongodb" as VM2
-  node "VM3 processor" as VM3
-  node "VM4 producers" as VM4
-}
-
-Dev --> TF : terraform apply/destroy
-TF --> VM1
-TF --> VM2
-TF --> VM3
-TF --> VM4
-
-Dev --> ANS : ansible-playbook
-ANS --> VM1 : install Kafka (:9092)
-ANS --> VM2 : install MongoDB (:27017)
-ANS --> VM3 : deploy Processor (:8080)
-ANS --> VM4 : run Producers
-
-SM ..> ANS : inject creds
-VARS ..> TF
-VARS ..> ANS
-
-VM4 --> VM1 : produce :9092
-VM3 --> VM1 : consume :9092
-VM3 --> VM2 : write :27017
-
-note bottom
-CA1 Requirements:
-- Idempotent provisioning + teardown
-- Parameterized variables
-- Secrets via SM/Vault
-- Outputs summary & smoke test
-end note
-
-@enduml
-```
+## Diagram Overview
+![PlantUML-highlevel](https://www.plantuml.com/plantuml/svg/LLFTRXez4BttKyp7nITG8110oiz55KhKAgfeesp4LM-6tO6uUEsjFIQYLQK-H9-mJz8nBDdDrNfypioUEPwv3OoUOsdKV_nC9S5EhpnQLgpP4Cnd5p20Uvp3BB8haQc0vI90zucynxNp9Pp1p0QzCjI3lx__m3sJHzREmjgxKWgCb0fRRIlqM49uniAzQBk1DPf0BQHqrkNFaaB0FhQHt9MLisGvuxr8yfGpseqXfJ1dvw5pHpiohYBV0GmWaQemt-A6e9EKprr17VYfeAa4dLVzNsrt-J3lG_Qndphh7MeyVNZBhZiKxhqDZCR0_rBMhlKcUZgcp3vdRtCooZrnW0LQaUBJVp0Q7cQBOqAsEF2DeJpP5Q2pH1-4vcaZSH-2_a6X3-mgdQSlRcfrozbZfdufPQKnwCoDYmLq7mzPmookB77lsE-Hi5nSm1RNMpmaIzH2nidtZIjMDJPkOHEelCif1EThTD92fmajOau-rEWqQHBtOJ1u9mx23V3ha61LcVsmeC3UxPM0YIDIckEuEKwQuxIfA0PBIJo-nA0ok5yvjrLoVIeciAwVvrFg5xetrwFhSQ_56RSuYzJvtNjXZIz75vTjsaHe1LN6xU7Xv87mhaPNepPjAZGVhN1g9vJA5d1-VXAhxJTvN90vA89AhoPOigOv2qyfATHgeROL3je5cxImtDaGopRMjFNYDHCSUqcp8S7ACRjIfIL-fEzHUoh9ShXHij85oQIoXEc7EnraUD9QdW4JUjbHAwI7j7_4v6KI2zYXroZU1q5EmxtJA8CyF4osN7-9N4Mv5f4b-hriIIZTbgHcO4MsW2HBgLivnjBy0m00)
+## Architecture diagram
+![PlantUML-architecture](https://www.plantuml.com/plantuml/svg/bLPlR-BE4NxlJp7AxqM9hZROv7ftw8YE0Cb5EGB2a5HjAhIn1zXYxrgxw-IYzgH-Xtx3VfBEhWc6b4Rw9KhadNrczl6pyyVVj67Ab7dc6MuoX7ulXF_ywzymGwNOKgeSFi109XjK_YLNsa1F9MjkC36bGcXCcEBc1PwvMPDh2mfUOCO5ddgUtd1HCCLoq6kMocSkLh1acSQzdKJcXHGeJ6nUCWH5OPbOPVkGPyMAUvvI_2XgxTbJNB8oCpFyQNePNucSea26IxE74J95ZGMqF-uP5HCRQupsZJsbv7DVPbB1RsVkv-tcRCsJZK2j8Gn2pyjmXIAj3knsuKUrx7Qzhr_Dyloyri_FcM0hJ46XbgLAa12f4vHGbRBDlfL1umwgKJtn11lwr8jbnbDWbe66BgXI69uZfCmmM6RosHimlSOzn3NhDn-bDDgGSCsIGlaMx3csZgNdiSH81IT3iU82KK6Zb-PSmFNaz0IO1hVol88b6w839tKkJ9JyEztH2Vp3W_gsu2INQPbXy5GaBi1eF5ZSJVfGQN4KgZ4fRUeiLagMXTwvnLVlUN6XoP9WZR--ZMT7FHJcqY0GdlutP66u52mxhG-QzMP3xvVdKP8Gl7SVGwFKFZ9j_B22aSszw9AIW23sZS9Mu7wRuP_Wdn2NZm9DPGp969qvFm8wFu0gzjqeX0rRRjY3s4B3LWMaZGe8TId0oOt5GZlu5BIWSJDbItFw82PI6Ts1BwqlqOEOoO8dklCWV5WLPP2ZKRGEda9hCNA38YWrtHrPt44tlSkR7jI9vyxyTK0nWboAbKmVQvALBstjIDfCUcIQ74OMFBW0uXZyV123YmuahFKWg8OoJApOEtgBBRqTjuNZjhs9swln-yJQK2X9Lwwbggb5MshjO_fTqXts9jT0o32Y_ZMdOf9AqBfD39jhP9bPG-TpwpCjXxTtZgYJQ74n7i_YsRGtwUvkgbD9xbTS5_FfZ-vMgKwpkPEg4trgXP-QJWCV9jFh_d0n6KuNtyVpwM8U3xgjuFD7ktKrcIz6mna1uaLCc_rXLoEczdt8RTmVnl5u-huYPrQHj4nGwLgHzbQHisEAJ5xCMWfAAQT78iKoAsd3Tra9KK3CXZatloEZYEfWtXzEuoDKwU-m5lMgEibvnbStHmkMG4xNBMZq_q2xRDW29-y0Av5UWTDN9F7xmzw4KvWnbx5hNcZljNdv_hcjPA_gIcv9r0-NeyFbvCrowkrQb8is2jyQehU6zbl3cUKQRxibk6u9N1WKHaE3Pgf2JMF2lPt_rzze-VB7r8s4lrNkq84u_WvH14ibStZjzDO3ZdgqoSEMnY7-GHo9C3eU8Q88hXmgX_qxEnhcvdYO4AfszxzHA8Vtx_T8KD9iy3eYeR6TcgTUdRKaxhOhTc1I1QhIl4df3_Zaz7MbxzLLkU_KbqANEJdPLdmSMZKtYaySkJRxlH0-xBT2gBg7v-WxrpfG1ww6CpXeMlRjBbv7l9TaiapXP3VfeU4iFXVSpWqVhktGpBBjnmQTlFtSi7kNQ98rA2oa_NnhterWARFKQUf3MZaa5HmeyVmK2bHqDtRxNd634A1uWYNFqBdq5JAp4wL1b-WeZBVZjmFpotl8kL9IKO5KbJaVr3aV1ETsFH-u9tAl7wFwiLq_Kda8E-SVfJ4o1xbqJWSJD4vOPfjSs2OkRfn2RZjfGqZuYvGtYFHEjCNI9rI6Qqo3ZAuB1SdGdVpeNT_EXd-UKRC_70dkYygUVOH1vBsPZwy201Sf_aJjfcMmbn0DeplXwLxCR_HeFyl_2m00)
+## Sequence diagram
+![PlantUML-Sequence](https://www.plantuml.com/plantuml/svg/dPNDRk984CVlVehIx0Mq69iFAHbsDnhYaDc8P41y99T8gCTkS0kxo-ekXsHFUze7s7t3UP8j6yPuHZw52-wkVrN_wjzb-6H96ChJn255YOHWt8DlV_y7AscCsA99OPnboHjy--TVkC5mBmq4c6Pe9LmZaYKZCcZDUVlneUquTgzq9en8mSOYmeFIEzYAnCfQ94MDOMmmbK0chqV6nk0Xm0GD_38iFpy7Lx4AzrfQ2xrkhnOyCCQJYYY6lk_NpnAl3wmMExbKVqdeNVgE8q920nEzKreojx0mSLXDAbIPq0GVphq7ztSV2i7gzaV5-6a9u_anniy_1YT1dyteFUkzsEv5gU5bawR_hDcC7KPVJwf-ashmh3E38RU1vgGRDEc6fIxAGsdiIJTqd0cuLym_0ggwKbfHqtwM20sjntdGWULdsu4XS67-pgqqRYH8j9koH3aVhiW9NNus-2ATrIth2cT641WfI09NzPRvLot9Ms1EqZPe-51ebQPvfIrUrRPNDTQkvzsBN8TnGGajjhZRvOxRS50KdvcX5IQOHsxHD0yevnNfh1x1v5M6Z5BNdaRyr-z3_Xji9V4HmTZtNjAUMzAr7KwlgaJ7bF2O07a6RWIjQI64GVUYwyDq8RRKVjQdDWap5TeHxBAycqeolEY-z3gylvUwcnV3okiQQlyTg7stjB10xLTLcb4V2k7DDJ1gzvKnxzWfu7KeVAwE6IdK8W6b8_agROrhy0wkWLjTQi4sg2erizqAI_oYUUiN5QBHCBhqBtrcd7nv7C5qV3iTRwvdizLojHZFE_0m-_9vjbalxZimNzm5ayryijZyELilDklbJGry-0xmeLkRGIvHLMe6dxzHZ1g-vxHicwbNAfN62mtgiwrRD919ep1I8SXKaNNEvNcyviSAG0YZZ_v7ddGwu6c6QWwoCa1jyrJ2rc1wr9x3VFbFHj6nJF_2xrquayhwC3S9n4JPoFD-vokwAbtsOYaIYk6Fg-8t5MRJffSVSyfoWjRTt7PWlRXZf2PP92qPV6DsAKo41ysoJr97nV_E_m00)
 
 Replication (high-level)
 - make deploy → provisions VMs and installs components; make test → smoke test; make destroy → teardown.
