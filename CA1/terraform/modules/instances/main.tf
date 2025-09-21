@@ -16,6 +16,7 @@ resource "aws_instance" "vm1_kafka" {
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
   user_data                   = templatefile("${path.module}/templates/vm1-kafka.cloudinit.tftpl", {})
+  user_data_replace_on_change = true
   tags                        = merge(local.tags, { Name = "${var.name}-vm1-kafka", Role = "kafka" })
 }
 
@@ -28,6 +29,7 @@ resource "aws_instance" "vm2_mongo" {
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
   user_data                   = templatefile("${path.module}/templates/vm2-mongo.cloudinit.tftpl", {})
+  user_data_replace_on_change = true
   tags                        = merge(local.tags, { Name = "${var.name}-vm2-mongo", Role = "mongo" })
 }
 
@@ -52,6 +54,7 @@ resource "aws_instance" "vm3_processor" {
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
   user_data                   = templatefile("${path.module}/templates/vm3-processor.cloudinit.tftpl", local.processor_env)
+  user_data_replace_on_change = true
   tags                        = merge(local.tags, { Name = "${var.name}-vm3-processor", Role = "processor" })
 }
 
@@ -66,6 +69,7 @@ resource "aws_instance" "vm4_producers" {
   user_data = templatefile("${path.module}/templates/vm4-producers.cloudinit.tftpl", {
     KAFKA_BOOTSTRAP = local.kafka_bootstrap_resolved
   })
+  user_data_replace_on_change = true
   tags = merge(local.tags, { Name = "${var.name}-vm4-producers", Role = "producers" })
 }
 
