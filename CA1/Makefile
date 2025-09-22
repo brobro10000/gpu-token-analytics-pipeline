@@ -40,7 +40,7 @@ define SSH
 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $(SSH_KEY) $(SSH_USER)@$(1)
 endef
 
-.PHONY: help print addrs env verify verify-kafka verify-mongo verify-processor verify-producers \
+.PHONY: help print addrs env verify verify-kafka verify-mongo verify-mongo-expanded verify-processor verify-producers \
         verify-topics verify-mongo-doc smoke produce consume
 
 help:
@@ -51,6 +51,7 @@ help:
 	@echo "make verify            # run all service checks"
 	@echo "make verify-kafka      # list topics on VM1 (expects bitnami kafka)"
 	@echo "make verify-mongo      # ping mongod on VM2"
+	@echo "make verify-mongo-expanded
 	@echo "make verify-processor  # curl /health on VM3"
 	@echo "make verify-producers  # tail logs on VM4"
 	@echo "make smoke             # simple E2E: create topics (idempotent) + list"
@@ -107,7 +108,28 @@ verify-topics: verify-kafka
 verify-mongo: fix-key-perms
 	@if [ -z "$(VM2_PUB)" ]; then echo "VM2 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
 	@echo ">> VM2/Mongo: ping mongod"
-	@$(call SSH,$(VM2_HOST)) 'docker ps && docker exec -i mongo mongosh --quiet --eval "db.runCommand({ ping: 1 })" || true'
+	@$(call SSH,$(VM2_HOST)) 'docker ps && docker exec -i mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" || true'
+
+verify-mongo-expanded: fix-key-perms
+	@if [ -z "$(VM2_PUB)" ]; then echo "VM2 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
+	@echo ">> VM2/Mongo: docker ps (basic status)"
+	@$(call SSH,$(VM2_HOST)) 'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+
+	@echo ">> VM2/Mongo: container health status"
+	@$(call SSH,$(VM2_HOST)) 'docker inspect --format="{{.State.Health.Status}}" mongodb || echo "no-healthcheck"'
+
+	@echo ">> VM2/Mongo: ping mongod"
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" || true'
+
+	@echo ">> VM2/Mongo: list databases"
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.adminCommand({ listDatabases: 1 }).databases" || true'
+
+	@echo ">> VM2/Mongo: check GPU seed docs"
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh ca1 --quiet --eval "db.gpus.find().pretty()" || true'
+
+	@echo ">> VM2/Mongo: check indexes"
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh ca1 --quiet --eval "printjson(db.gpu_metrics.getIndexes()); printjson(db.token_usage.getIndexes()); printjson(db.gpus.getIndexes());" || true'
+
 
 verify-processor: fix-key-perms
 	@if [ -z "$(VM3_PUB)" ]; then echo "VM3 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
