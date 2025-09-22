@@ -41,7 +41,7 @@ ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $(SSH_KEY) $(SSH_USER)@$
 endef
 
 .PHONY: help print addrs env verify verify-kafka verify-mongo verify-mongo-expanded verify-processor verify-producers \
-        verify-topics verify-mongo-doc smoke produce consume
+        verify-processor-expanded verify-producers verify-topics verify-mongo-doc smoke produce consume
 
 help:
 	@echo "CA1 validation helpers (using PRIVATE IPs from terraform outputs)"
@@ -53,6 +53,7 @@ help:
 	@echo "make verify-mongo      # ping mongod on VM2"
 	@echo "make verify-mongo-expanded
 	@echo "make verify-processor  # curl /health on VM3"
+	@echo "make verify-processor-expanded
 	@echo "make verify-producers  # tail logs on VM4"
 	@echo "make smoke             # simple E2E: create topics (idempotent) + list"
 	@echo
@@ -135,6 +136,48 @@ verify-processor: fix-key-perms
 	@if [ -z "$(VM3_PUB)" ]; then echo "VM3 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
 	@echo ">> VM3/Processor: health check (curl localhost since service binds on 8080)"
 	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health || (echo "health check failed" && exit 1)'
+
+verify-processor-expanded: fix-key-perms
+	@if [ -z "$(VM3_PUB)" ]; then echo "VM3 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
+	@echo ">> VM3/Processor: docker ps (status/ports)"
+	@$(call SSH,$(VM3_HOST)) 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"'
+
+	@echo ">> VM3/Processor: container health status"
+	@$(call SSH,$(VM3_HOST)) 'docker inspect --format="{{.State.Health.Status}}" processor 2>/dev/null || echo "no-healthcheck"'
+
+	@echo ">> VM3/Processor: health endpoint"
+	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health || (echo "health check failed" && exit 1)'
+
+	@echo ">> VM3/Processor: show runtime env (.env)"
+	@$(call SSH,$(VM3_HOST)) 'echo "--- /opt/processor/.env ---"; sed -n "1,120p" /opt/processor/.env || true'
+
+	@echo ">> VM3/Processor: resolve Kafka & Mongo from .env"
+	@$(call SSH,$(VM3_HOST)) 'KAFKA=$$(sed -n "s/^KAFKA_BOOTSTRAP=\\(.*\\)/\\1/p" /opt/processor/.env); echo "KAFKA_BOOTSTRAP=$$KAFKA"; \
+	                           MONGO=$$(sed -n "s/^MONGO_URL=\\(.*\\)/\\1/p" /opt/processor/.env); echo "MONGO_URL=$$MONGO"'
+
+	@echo ">> VM3/Processor: reachability checks (nc) to Kafka & Mongo"
+	@$(call SSH,$(VM3_HOST)) 'set -e; \
+	  KAFKA=$$(sed -n "s/^KAFKA_BOOTSTRAP=\\(.*\\)/\\1/p" /opt/processor/.env); \
+	  KHOST=$${KAFKA%:*}; KPORT=$${KAFKA##*:}; \
+	  echo "Probing Kafka $$KHOST:$$KPORT"; nc -zv -w2 "$$KHOST" "$$KPORT"; \
+	  MONGO=$$(sed -n "s/^MONGO_URL=mongodb:\\/\\/\\([^:]*\\):\\([0-9]*\\).*/\\1 \\2/p" /opt/processor/.env); \
+	  set -- $$MONGO; MH=$$1; MP=$$2; echo "Probing Mongo $$MH:$$MP"; nc -zv -w2 "$$MH" "$$MP"; true'
+
+	@echo ">> VM3/Processor: confirm process is listening on 8080"
+	@$(call SSH,$(VM3_HOST)) 'ss -ltnp | grep ":8080" || (echo "nothing listening on 8080" && exit 1)'
+
+	@echo ">> VM3/Processor: GET /gpu/info (best-effort)"
+	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/gpu/info || true'
+
+	@echo ">> VM3/Processor: container user & image (sanity)"
+	@$(call SSH,$(VM3_HOST)) 'docker inspect --format="User={{.Config.User}} Image={{.Config.Image}}" processor || true'
+
+	@echo ">> VM3/Processor: recent logs (last 120 lines)"
+	@$(call SSH,$(VM3_HOST)) 'docker logs --tail=120 processor || true'
+
+	@echo ">> VM3/Processor: if unhealthy, dump full health details"
+	@$(call SSH,$(VM3_HOST)) 'HS=$$(docker inspect --format="{{.State.Health.Status}}" processor 2>/dev/null || echo "unknown"); \
+	  if [ "$$HS" != "healthy" ]; then echo "--- Healthcheck JSON ---"; docker inspect processor | sed -n "1,200p"; fi || true'
 
 verify-producers: fix-key-perms
 	@if [ -z "$(VM4_PUB)" ]; then echo "VM4 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
