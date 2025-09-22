@@ -22,12 +22,12 @@ output "region" {
 # --- Networking outputs ---
 output "vpc_id" {
   description = "VPC ID created by the VPC module"
-  value       = module.vpc.vpc_id
+  value       = module.network.vpc_id
 }
 
 output "subnet_id" {
   description = "Subnet ID created by the VPC module"
-  value       = module.vpc.subnet_id
+  value       = module.network.subnet_id
 }
 
 output "security_groups" {
