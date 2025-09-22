@@ -41,7 +41,7 @@ ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $(SSH_KEY) $(SSH_USER)@$
 endef
 
 .PHONY: help print addrs env verify verify-kafka verify-mongo verify-mongo-expanded verify-processor verify-producers \
-        verify-processor-expanded verify-producers verify-topics verify-mongo-doc smoke produce consume
+        verify-processor-expanded verify-producers verify-topics verify-mongo-doc smoke produce consume verify-workflow
 
 help:
 	@echo "CA1 validation helpers (using PRIVATE IPs from terraform outputs)"
@@ -182,7 +182,61 @@ verify-processor-expanded: fix-key-perms
 verify-producers: fix-key-perms
 	@if [ -z "$(VM4_PUB)" ]; then echo "VM4 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
 	@echo ">> VM4/Producers: recent logs"
-	@$(call SSH,$(VM4_HOST)) 'docker ps && docker logs --tail=100 producers || true'
+	@$(call SSH,$(VM4_HOST)) 'docker ps && docker logs --tail=100 producer || true'
+
+# verify-workflow: End-to-end check with pre-clean if counts exceed a cap
+# Usage: make verify-workflow [MAX_DOCS=100]
+verify-workflow: fix-key-perms
+	@if [ -z "$(VM1_PUB)$(VM2_PUB)$(VM3_PUB)$(VM4_PUB)" ]; then echo "Missing VM public IPs; run 'make addrs' first."; exit 1; fi
+
+	@echo "=== 0) Preflight: Processor health and topics exist ==="
+	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health && echo "Processor healthy ✅"'
+	@$(call SSH,$(VM1_HOST)) 'docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list | egrep -E "gpu\.metrics\.v1|token\.usage\.v1"'
+
+	@echo "=== 0b) Enforce Mongo cap before run (default MAX_DOCS=100) ==="
+	@$(call SSH,$(VM2_HOST)) 'DB=ca1; MAX=$${MAX_DOCS:-100}; \
+	  GM=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpu_metrics.countDocuments()"); \
+	  TU=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").token_usage.countDocuments()"); \
+	  GP=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpus.countDocuments()"); \
+	  echo "Counts: gpu_metrics=$$GM token_usage=$$TU gpus=$$GP (cap=$$MAX)"; \
+	  if [ $$GM -gt $$MAX ] || [ $$TU -gt $$MAX ] || [ $$GP -gt $$MAX ]; then \
+	    echo "Cap exceeded → dropping collections gpu_metrics, token_usage, gpus"; \
+	    docker exec -i mongodb mongosh --quiet --eval "const d=db.getSiblingDB(\"$$DB\"); d.gpu_metrics.drop(); d.token_usage.drop(); d.gpus.drop(); print(\"dropped\")"; \
+	    sleep 2; \
+	  else \
+	    echo "Counts within cap → no reset"; \
+	  fi'
+
+	@echo "=== 1) Baseline Mongo counts (before) ==="
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca1\").gpu_metrics.countDocuments()" > /tmp/gpu_before.txt'
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca1\").token_usage.countDocuments()" > /tmp/tok_before.txt'
+	@$(call SSH,$(VM2_HOST)) 'echo "gpu_metrics(before)=$$(cat /tmp/gpu_before.txt)"; echo "token_usage(before)=$$(cat /tmp/tok_before.txt)"'
+
+	@echo "=== 2) Trigger producer one-shot ==="
+	@$(call SSH,$(VM4_HOST)) 'cd /opt/producers && docker compose up --no-build producer --abort-on-container-exit || true'
+	@$(call SSH,$(VM4_HOST)) 'CID=$$(docker compose -f /opt/producers/docker-compose.yml ps -q producer); \
+	  if [ -n "$$CID" ]; then \
+	    EC=$$(docker inspect --format="{{.State.ExitCode}}" $$CID 2>/dev/null || echo "N/A"); \
+	    echo "Producer ExitCode=$$EC"; docker logs --tail=60 $$CID || true; \
+	  else echo "Producer container not found"; fi'
+
+	@echo "=== 3) Give the processor a moment to consume & write ==="
+	@sleep 4
+
+	@echo "=== 4) Mongo counts (after) + delta assertions ==="
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca1\").gpu_metrics.countDocuments()" > /tmp/gpu_after.txt'
+	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca1\").token_usage.countDocuments()" > /tmp/tok_after.txt'
+	@$(call SSH,$(VM2_HOST)) 'GPU_B=$$(cat /tmp/gpu_before.txt); GPU_A=$$(cat /tmp/gpu_after.txt); \
+	  TOK_B=$$(cat /tmp/tok_before.txt); TOK_A=$$(cat /tmp/tok_after.txt); \
+	  echo "gpu_metrics(after)=$$GPU_A (before=$$GPU_B)"; echo "token_usage(after)=$$TOK_A (before=$$TOK_B)"; \
+	  test $$(($$GPU_A-$$GPU_B)) -ge 1 && echo "gpu_metrics delta OK ✅" || { echo "gpu_metrics did not increase ❌"; exit 1; }; \
+	  test $$(($$TOK_A-$$TOK_B)) -ge 1 && echo "token_usage delta OK ✅" || { echo "token_usage did not increase ❌"; exit 1; }'
+
+	@echo "=== 5) Processor API spot-check ==="
+	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/gpu/info | sed -e "s/.*/sample: &/;q" || true'
+
+	@echo "=== ✅ Workflow verified end-to-end ==="
+
 
 ssh-kafka:     ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM1_PUB)
 ssh-mongo:     ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM2_PUB)
