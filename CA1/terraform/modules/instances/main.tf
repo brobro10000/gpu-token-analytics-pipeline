@@ -45,8 +45,8 @@ locals {
     # build-from-git
     APP_GIT_URL = "https://github.com/brobro10000/gpu-token-analytics-pipeline.git"
     APP_GIT_REF = "main"
-    APP_SUBDIR  = "CA0/vm3-processor"   # <— this is the folder with the Dockerfile
-    IMAGE_TAG   = "processor:ca0"       # or processor:${var.app_version}
+    APP_SUBDIR  = "CA0/vm3-processor" # <— this is the folder with the Dockerfile
+    IMAGE_TAG   = "processor:ca0"     # or processor:${var.app_version}
   }
 }
 
@@ -91,7 +91,7 @@ resource "aws_instance" "vm4_producers" {
     HOSTNAME     = "vm4"
   })
   user_data_replace_on_change = true
-  tags = merge(local.tags, { Name = "${var.name}-vm4-producers", Role = "producers" })
+  tags                        = merge(local.tags, { Name = "${var.name}-vm4-producers", Role = "producers" })
 }
 
 # ===== Outputs =====
