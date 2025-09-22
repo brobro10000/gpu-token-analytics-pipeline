@@ -3,6 +3,30 @@ package_update: true
 package_upgrade: false
 
 write_files:
+  - path: /opt/processor/.env
+    permissions: "0600"
+    content: |
+      # Base (non-secret) values; we'll append MONGO_URL with creds at boot.
+      KAFKA_BOOTSTRAP=${kafka_bootstrap}
+      PRICE_PER_HOUR_USD=${price_per_hour_usd}
+      HOST=0.0.0.0
+      PORT=8080
+  - path: /usr/local/bin/processor-secrets-prepare.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)
+      APP_JSON=$(aws secretsmanager get-secret-value --secret-id "${name}/mongo-app" --query SecretString --output text --region "$REGION")
+      APP_USER=$(printf '%s' "$APP_JSON" | jq -r .username)
+      APP_PASS=$(printf '%s' "$APP_JSON" | jq -r .password)
+      APP_DB=$(printf   '%s' "$APP_JSON" | jq -r .db)
+      AUTH_DB=$(printf  '%s' "$APP_JSON" | jq -r .authDb)
+
+      # VM2 private IP is templated in as ${mongo_host}
+      MONGO_URL="mongodb://${APP_USER}:${APP_PASS}@${mongo_host}:27017/${APP_DB}?authSource=${AUTH_DB}"
+      echo "MONGO_URL=${MONGO_URL}" >> /opt/processor/.env
+      chmod 0600 /opt/processor/.env
   # Compose runs the image we build from Git
   - path: /opt/processor/docker-compose.yml
     permissions: "0644"
@@ -96,6 +120,12 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y awscli jq
+  - /usr/local/bin/processor-secrets-prepare.sh
+  - systemctl enable --now processor-env-refresh.service
   - |
     export DEBIAN_FRONTEND=noninteractive
     retry(){ for i in 1 2 3; do "$@" && break || { echo "retry $i for: $*"; sleep 8; }; done; }

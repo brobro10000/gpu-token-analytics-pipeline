@@ -3,6 +3,47 @@ package_update: true
 package_upgrade: false
 
 write_files:
+  - path: /usr/local/bin/mongo-secrets-prepare.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      REGION=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)
+
+      # Adjust the prefix to match how you created secrets: e.g. ${NAME}/mongo-root
+      ROOT_JSON=$(aws secretsmanager get-secret-value --secret-id "${NAME}/mongo-root" --query SecretString --output text --region "$REGION")
+      APP_JSON=$(aws secretsmanager get-secret-value --secret-id "${NAME}/mongo-app"  --query SecretString --output text --region "$REGION")
+
+      ROOT_USER=$(printf '%s' "$ROOT_JSON" | jq -r .username)
+      ROOT_PASS=$(printf '%s' "$ROOT_JSON" | jq -r .password)
+      APP_USER=$(printf '%s' "$APP_JSON"  | jq -r .username)
+      APP_PASS=$(printf '%s' "$APP_JSON"  | jq -r .password)
+      APP_DB=$(printf   '%s' "$APP_JSON"  | jq -r .db)       # "ca1"
+      AUTH_DB=$(printf  '%s' "$APP_JSON"  | jq -r .authDb)   # "admin"
+
+      install -d -m 0755 /opt/mongo
+      umask 077
+      cat > /opt/mongo/.env <<EOF
+MONGO_INITDB_ROOT_USERNAME=${ROOT_USER}
+MONGO_INITDB_ROOT_PASSWORD=${ROOT_PASS}
+EOF
+      chmod 0600 /opt/mongo/.env
+
+      # One-time init script to create the app user on first boot of a fresh volume
+      install -d -m 0755 /opt/mongo/config/init-scripts
+      cat > /opt/mongo/config/init-scripts/01-create-app-user.js <<JS
+db = db.getSiblingDB("${APP_DB}");
+db.createUser({
+  user: "${APP_USER}",
+  pwd:  "${APP_PASS}",
+  roles: [{ role: "readWrite", db: "${APP_DB}" }]
+});
+print("✅ Created app user ${APP_USER} on db ${APP_DB}");
+JS
+  - path: /opt/mongo/.env
+    permissions: "0600"
+    content: |
+      # Populated at boot from AWS Secrets Manager
   # --- Docker Compose for MongoDB 7 (single node) ---
   - path: /opt/mongo/docker-compose.yml
     permissions: "0644"
@@ -13,7 +54,10 @@ write_files:
           image: mongo:7.0
           container_name: mongodb
           restart: unless-stopped
-          command: ["--bind_ip_all"]
+          command: ["--bind_ip_all", "--auth"]
+          env_file:
+            - /opt/mongo/.env
+          command: ["--auth"]
           ports:
             - "27017:27017"   # Restrict access with Security Groups to VM3 only
           volumes:
@@ -98,6 +142,7 @@ write_files:
 
       # Ensure init-scripts dir exists (named volume avoids host UID issues)
       install -d -m 0755 /opt/mongo/config/init-scripts
+      /usr/local/bin/mongo-secrets-prepare.sh
 
       # Bring up Mongo
       cd /opt/mongo
@@ -134,6 +179,10 @@ write_files:
       WantedBy=multi-user.target
 
 runcmd:
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y awscli jq
   # Helper + basics
   - |
     export DEBIAN_FRONTEND=noninteractive

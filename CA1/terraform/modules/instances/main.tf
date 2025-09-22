@@ -23,12 +23,15 @@ resource "aws_instance" "vm1_kafka" {
 # ===== VM2: MongoDB =====
 resource "aws_instance" "vm2_mongo" {
   ami                         = data.aws_ssm_parameter.ubuntu_24_04_amd64.value
+  iam_instance_profile        = aws_iam_instance_profile.vm2_profile.name
   instance_type               = var.vm2_instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.sg_ids.admin, var.sg_ids.mongo]
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
-  user_data                   = templatefile("${path.module}/templates/vm2-mongo.cloudinit.tftpl", {})
+  user_data                   = templatefile("${path.module}/templates/vm2-mongo.cloudinit.tftpl", {
+    NAME               = var.name
+  })
   user_data_replace_on_change = true
   tags                        = merge(local.tags, { Name = "${var.name}-vm2-mongo", Role = "mongo" })
 }
@@ -39,6 +42,7 @@ locals {
   mongo_url_resolved       = "mongodb://${aws_instance.vm2_mongo.private_ip}:27017/ca1"
 
   processor_env = {
+    NAME               = var.name
     PRICE_PER_HOUR_USD = var.price_per_hour_usd
     KAFKA_BOOTSTRAP    = local.kafka_bootstrap_resolved
     MONGO_URL          = local.mongo_url_resolved
@@ -53,6 +57,7 @@ locals {
 # ===== VM3: Processor =====
 resource "aws_instance" "vm3_processor" {
   ami                         = data.aws_ssm_parameter.ubuntu_24_04_amd64.value
+  iam_instance_profile         = aws_iam_instance_profile.vm3_profile.name
   instance_type               = var.vm3_instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.sg_ids.admin, var.sg_ids.processor]
