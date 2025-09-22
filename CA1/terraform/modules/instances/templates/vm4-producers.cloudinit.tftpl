@@ -1,8 +1,130 @@
 #cloud-config
-hostname: vm4-producers
+package_update: true
+package_upgrade: false
+
 write_files:
-  - path: /opt/producers.env
+  # Compose for one-shot producer. We pin the container name for easier inspection.
+  - path: /opt/producers/docker-compose.yml
+    permissions: "0644"
+    content: |
+      version: "3.8"
+      services:
+        producer:
+          image: ${IMAGE_TAG}
+          container_name: producer
+          restart: "no"                # one-shot → exits when done
+          env_file: /opt/producers/.env
+          environment:
+            - KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+            - GPU_SEED=$${GPU_SEED:-/data/gpu_seed.json}
+            - BATCH=$${BATCH:-20}
+            - SLEEP_SEC=$${SLEEP_SEC:-0.5}
+            - TOPIC_METRIC=$${TOPIC_METRIC:-gpu.metrics.v1}
+            - TOPIC_TOKEN=$${TOPIC_TOKEN:-token.usage.v1}
+            - HOSTNAME=$${HOSTNAME:-vm4}
+          user: "10001:10001"
+          # Lightweight health probe to Kafka (python socket)
+          healthcheck:
+            test: ["CMD-SHELL", "python - <<'PY'\nimport os,socket;h,p=os.environ['KAFKA_BOOTSTRAP'].split(':');s=socket.socket();s.settimeout(2);s.connect((h,int(p)));s.close()\nPY"]
+            interval: 10s
+            timeout: 5s
+            retries: 3
+
+  # Runtime env (Terraform injects KAFKA_BOOTSTRAP; the rest keep sensible defaults)
+  - path: /opt/producers/.env
+    permissions: "0644"
     content: |
       KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+      GPU_SEED=/data/gpu_seed.json
+      BATCH=20
+      SLEEP_SEC=0.5
+      TOPIC_METRIC=gpu.metrics.v1
+      TOPIC_TOKEN=token.usage.v1
+      HOSTNAME=vm4
+
+  # Boot/run script: build image from Git subdir, then run the one-shot producer once.
+  - path: /usr/local/bin/producers-run.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      log(){ echo "[producers-run] $*"; }
+      export DOCKER_BUILDKIT=1
+
+      # Wait for Docker
+      for i in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break || { log "Docker not ready ($i/30)"; sleep 2; }
+      done
+
+      # Build directly from remote Git context: https://github.com/ORG/REPO.git#REF:SUBDIR
+      GIT_CTX="${APP_GIT_URL}#${APP_GIT_REF}:${APP_SUBDIR}"
+      IMAGE="${IMAGE_TAG}"
+
+      log "docker build --pull -t $${IMAGE} $${GIT_CTX}"
+      for n in 1 2 3; do
+        if docker build --pull -t "$${IMAGE}" "$${GIT_CTX}"; then break; fi
+        log "Build attempt $n failed, retrying in 10s..."; sleep 10
+      done
+
+      install -d -m 0755 /opt/producers
+      cd /opt/producers
+
+      # Preflight: show env, quick TCP probe to Kafka
+      log "env file:"
+      sed -n '1,200p' ./.env || true
+
+      # Run once and exit (one-shot)
+      log "docker compose up --no-build producer (one-shot)"
+      docker compose up --no-build producer || true
+
+      # Show status + last logs
+      log "compose ps -a:"
+      docker compose ps -a
+      log "producer logs (tail 120):"
+      docker logs --tail=120 producer || true
+
+  # Systemd: run once at boot; can be re-run manually with 'systemctl start producers-run'
+  - path: /etc/systemd/system/producers-run.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Build-from-Git and run one-shot Producer
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/producers-run.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+
 runcmd:
-  - echo "producers placeholder bootstrap" > /etc/motd
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    retry(){ for i in 1 2 3; do "$@" && break || { echo "retry $i for: $*"; sleep 8; }; done; }
+
+  # Install Docker (Ubuntu 24.04 "noble")
+  - |
+    retry apt-get update -y
+    retry apt-get install -y ca-certificates curl gnupg python3-minimal
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    . /etc/os-release
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+    retry apt-get update -y
+    retry apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu || true
+
+  # Enable + run once at first boot
+  - systemctl daemon-reload
+  - systemctl enable --now producers-run.service
+
+  # Sentinel
+  - |
+    date | tee /var/log/ca1-producers-cloudinit.done
+    echo "OK" > /opt/producers/CLOUDINIT_OK

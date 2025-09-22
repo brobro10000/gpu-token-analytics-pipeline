@@ -71,8 +71,24 @@ resource "aws_instance" "vm4_producers" {
   vpc_security_group_ids      = [var.sg_ids.admin, var.sg_ids.producers]
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
+  # Build-from-Git vars + runtime env
   user_data = templatefile("${path.module}/templates/vm4-producers.cloudinit.tftpl", {
-    KAFKA_BOOTSTRAP = local.kafka_bootstrap_resolved
+    # Runtime wiring
+    KAFKA_BOOTSTRAP = "${aws_instance.vm1_kafka.private_ip}:9092"
+
+    # Build-from-Git (CA0 producers path)
+    APP_GIT_URL = "https://github.com/brobro10000/gpu-token-analytics-pipeline.git"
+    APP_GIT_REF = "main"
+    APP_SUBDIR  = "CA0/vm4-producers"
+    IMAGE_TAG   = "producer:ca0"
+
+    # Optional env defaults (can also be overridden via .env)
+    GPU_SEED     = "/data/gpu_seed.json"
+    BATCH        = "20"
+    SLEEP_SEC    = "0.5"
+    TOPIC_METRIC = "gpu.metrics.v1"
+    TOPIC_TOKEN  = "token.usage.v1"
+    HOSTNAME     = "vm4"
   })
   user_data_replace_on_change = true
   tags = merge(local.tags, { Name = "${var.name}-vm4-producers", Role = "producers" })
