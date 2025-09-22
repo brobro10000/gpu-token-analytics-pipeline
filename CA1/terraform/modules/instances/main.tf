@@ -36,12 +36,17 @@ resource "aws_instance" "vm2_mongo" {
 # ===== Resolved endpoints (computed from VM1/VM2 private IPs) =====
 locals {
   kafka_bootstrap_resolved = "${aws_instance.vm1_kafka.private_ip}:9092"
-  mongo_url_resolved       = "mongodb://${aws_instance.vm2_mongo.private_ip}:27017/ca0"
+  mongo_url_resolved       = "mongodb://${aws_instance.vm2_mongo.private_ip}:27017/ca1"
 
   processor_env = {
     PRICE_PER_HOUR_USD = var.price_per_hour_usd
     KAFKA_BOOTSTRAP    = local.kafka_bootstrap_resolved
     MONGO_URL          = local.mongo_url_resolved
+    # build-from-git
+    APP_GIT_URL = "https://github.com/brobro10000/gpu-token-analytics-pipeline.git"
+    APP_GIT_REF = "main"
+    APP_SUBDIR  = "CA0/vm3-processor"   # <— this is the folder with the Dockerfile
+    IMAGE_TAG   = "processor:ca0"       # or processor:${var.app_version}
   }
 }
 
