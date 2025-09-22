@@ -20,40 +20,40 @@
 | 2025-09-21     | Makefile improvements                     | Added `deploy` (init+plan+apply) and `down` (destroy). Split `clean` vs `nuke`. Auto-injected `my_ip_cidr`. Centralized workflow.                                                                                                  |
 | 2025-09-21     | Tooling & linting                         | Integrated `terraform fmt`, `validate`, `tflint` (v0.54+ `call_module_type`), and recommended `checkov`/`tfsec`. Added pre-commit hooks.                                                                                           |
 | 2025-09-21     | Outputs & data sources                    | Added root outputs: account\_id, arn, region, vpc\_id, subnet\_id, sg\_ids, instance\_private\_ips, instance\_public\_ips.                                                                                                         |
-| **2025-09-21** | **Kafka VM cloud-init template creation** | Drafted `vm1-kafka.cloudinit` with Docker + Compose install, `.env` file for `KAFKA_BIND_ADDR`, and Compose spec for Bitnami Kafka 3.7 in KRaft mode. Added idempotent topic creation.                                             |
-| **2025-09-21** | **Systemd Option 2 refresh unit**         | Implemented `kafka-env-refresh.service` + `/usr/local/bin/kafka-env-refresh.sh` to auto-populate `KAFKA_BIND_ADDR` via IMDS on every reboot and re-run `docker compose up -d`. Ensures resilience after stop/start.                |
-| **2025-09-21** | **Terraform templatefile fixes**          | Hit `Extra characters after interpolation expression` error on `${KAFKA_BIND_ADDR:?missing}`. Solution: escape with `$${KAFKA_BIND_ADDR:?missing}` so Compose expands it, not Terraform.                                           |
-| **2025-09-21** | **Debugging container health**            | Kafka container stuck in `unhealthy` state. Logs revealed `mkdir: cannot create directory '/bitnami/kafka/config': Permission denied`. Root cause: bind-mounted `/opt/kafka/data` not writable by container UID 1001.              |
-| **2025-09-21** | **Permissions fix for Kafka data**        | Added `chown -R 1001:1001 /opt/kafka/data` to ensure Bitnami Kafka (non-root UID 1001) can create subdirs. Updated refresh script to enforce permissions each boot.                                                                |
-| **2025-09-21** | **Mongo VM cloud-init template creation** | Drafted `vm2-mongo.cloudinit` with Docker + Compose install, named volume (`mongo_data`), init scripts (`indexes.js` and `seed-gpus.js`), and systemd refresh service. Healthcheck added with `start_period` for reliability.      |
-| **2025-09-21** | **Mongo seed + verify flow**              | Added GPU seed docs (RTX 3090, A100 40GB) via `seed-gpus.js`. Extended Makefile `verify-mongo` target to check container health, databases, seed docs, and indexes for grading robustness.                                         |
-| **2025-09-21** | **Processor VM cloud-init template**      | Created a cloud-init spec that installs Docker + Compose, writes `.env` with runtime values, and defines `docker-compose.yml` for the processor. Added systemd refresh service to rebuild image on each reboot.                    |
-| **2025-09-21** | **Build-from-Git method**                 | Instead of embedding a zip, chose to build directly from GitHub (`gpu-token-analytics-pipeline.git#main:CA0/vm3-processor`). This ensures the latest code is pulled on every provision.                                            |
-| **2025-09-21** | **Processor image details**               | Dockerfile based on `python:3.12-slim`. Includes FastAPI 0.112, Uvicorn 0.30, confluent-kafka 2.5, pymongo 4.8. Runs as non-root UID 10001. Healthcheck probes `/health`.                                                          |
-| **2025-09-21** | **Service behavior**                      | Processor consumes from Kafka topics `gpu.metrics.v1` and `token.usage.v1`. Writes to MongoDB collections `gpu_metrics` and `token_usage`. Adds sliding-window throughput and computes `cost_per_token`.                           |
-| **2025-09-21** | **API endpoints**                         | Provides `/health` for readiness and `/gpu/info` returning the latest GPU metrics doc.                                                                                                                                             |
-| **2025-09-21** | **Makefile improvements (exec)**          | Added extensible `exec-vmX` helpers to run arbitrary commands inside containers (auto-resolves container IDs). Created `verify-processor` expanded checks: health, env, reachability to Kafka/Mongo, `/gpu/info` test, logs.       |
-| **2025-09-21** | **Debugging processor health**            | Found processor container marked `unhealthy`. Root cause: slim base image lacked `curl`. Fix: either add `curl` in Dockerfile or replace healthcheck with `wget`/Python-based probe.                                               |
-| **2025-09-21** | **Container naming**                      | Initially failed because container was named `processor-processor-1`. Fixed by either pinning `container_name: processor` in Compose or using `docker compose ps -q processor` in Make targets.                                    |
+| **2025-09-21** | **Kafka VM cloud-init template creation** | Drafted `vm1-kafka.cloudinit` with Docker + Compose install, `.env` for `KAFKA_BIND_ADDR`, and Compose spec for Bitnami Kafka 3.7 (KRaft). Added idempotent topic creation.                                                        |
+| **2025-09-21** | **Systemd Option 2 refresh unit**         | Implemented `kafka-env-refresh.service` + `/usr/local/bin/kafka-env-refresh.sh` to auto-populate `KAFKA_BIND_ADDR` via IMDS on every reboot and re-run `docker compose up -d`.                                                     |
+| **2025-09-21** | **Terraform templatefile fixes**          | Hit `${...}` interpolation issue on `${KAFKA_BIND_ADDR:?missing}`. Fixed by escaping as `$${KAFKA_BIND_ADDR:?missing}` so Compose expands it, not Terraform.                                                                       |
+| **2025-09-21** | **Debugging container health**            | Kafka container stuck `unhealthy`; logs showed `mkdir: cannot create directory '/bitnami/kafka/config': Permission denied`. Root cause: bind-mounted `/opt/kafka/data` not writable by container UID 1001.                         |
+| **2025-09-21** | **Permissions fix for Kafka data**        | Added `chown -R 1001:1001 /opt/kafka/data` in refresh script to match Bitnami Kafka’s non-root UID.                                                                                                                                |
+| **2025-09-21** | **Mongo VM cloud-init template creation** | Drafted `vm2-mongo.cloudinit` with Docker + Compose, named volume (`mongo_data`), init scripts (`indexes.js`, `seed-gpus.js`), and a systemd refresh unit. Healthcheck uses `start_period`.                                        |
+| **2025-09-21** | **Mongo seed + verify flow**              | Seeded GPU docs (RTX 3090, A100 40GB) and created robust `verify-mongo` checking health, indexes, and seed counts.                                                                                                                 |
+| **2025-09-21** | **Processor VM cloud-init template**      | Created VM3 cloud-init that installs Docker/Compose, writes `.env`, and defines Compose for the FastAPI processor. Added systemd refresh that builds image from Git subdir and waits for health.                                   |
+| **2025-09-21** | **Build-from-Git method**                 | Switched to Docker’s remote build context (`repo.git#ref:subdir`) for VM3. Avoids rsync and user-data bloat, always builds from source.                                                                                            |
+| **2025-09-21** | **Processor image & health**              | Python 3.12 slim with FastAPI 0.112, Uvicorn 0.30, confluent-kafka 2.5, pymongo 4.8. Healthcheck uses HTTP `/health`. Fixed “unhealthy” due to missing `curl` by switching to wget/Python probe.                                   |
+| **2025-09-21** | **Service behavior & API**                | Processor consumes `gpu.metrics.v1`/`token.usage.v1`, writes to Mongo (`gpu_metrics`, `token_usage`), computes `cost_per_token`, exposes `/health` + `/gpu/info`.                                                                  |
+| **2025-09-21** | **Exec/verify helpers**                   | Added generic `exec-vmX` Make targets that auto-resolve container IDs via `docker compose ps -q`. Expanded `verify-processor` to show env, reachability (nc), health history, and logs.                                            |
+| **2025-09-21** | **Container naming fix**                  | Avoided brittle names by either setting `container_name: processor` or resolving with `docker compose ps -q processor` in Make.                                                                                                    |
+| **2025-09-21** | **Producers VM (VM4) template**           | Implemented `vm4-producers.cloudinit` using build-from-Git (`CA0/vm4-producers`), one-shot Compose service (`restart: "no"`), explicit `container_name: producer`, and Python-socket healthcheck to Kafka (no curl dependency).    |
+| **2025-09-21** | **Verify producers + triggering**         | Added `verify-producers` to show ps/logs/exit code and a `trigger-producers` command (Compose `up --no-build producer`). Confirmed successful run: “Loaded 2 seeds… Sent 40 records (all flushed).”                                |
+| **2025-09-21** | **End-to-end workflow verifier**          | Authored `verify-workflow` Make target: checks processor health & topics, records Mongo baseline, triggers producer, asserts Mongo deltas ≥1, spot-checks `/gpu/info`, prints Kafka end offsets.                                   |
+| **2025-09-21** | **TTY fix in scripts**                    | Fixed `the input device is not a TTY` by removing `-t` from `docker exec` in non-interactive SSH contexts (use plain or `-i` only).                                                                                                |
+| **2025-09-21** | **Pre-clean safety cap**                  | Added step `0b` to `verify-workflow` to **drop collections** (`gpu_metrics`, `token_usage`, `gpus`) if any count exceeds a cap (default `MAX_DOCS=100`) before the run to keep the DB tidy for grading.                            |
+| **2025-09-21** | **Successful end-to-end run**             | E2E verifier output showed processor healthy, topics present, producer sent 40 records, Mongo counts increased (e.g., 60→80), and `/gpu/info` returned data. Final banner: **Workflow verified end-to-end**.                       |
 
 ---
 
 ## Decisions
 
-* **CA1 mirrors CA0**: Same 4-VM pipeline, now fully Terraform-managed.
+* **CA1 mirrors CA0** with Terraform-managed provisioning and cloud-init bootstraps across four VMs.
 * **VM stacks**:
 
-    * VM1: Kafka 3.7.0 (KRaft, Bitnami container)
+    * VM1: Kafka 3.7.0 (KRaft, Bitnami)
     * VM2: MongoDB 7.0.x
     * VM3: FastAPI 0.112 + Uvicorn 0.30 + confluent-kafka 2.5 + pymongo 4.8
     * VM4: Python 3.12 + confluent-kafka 2.5
-* **Processor design**:
-
-    * Build-from-Git ensures latest source at provision time (`CA0/vm3-processor`).
-    * Environment variables passed via `.env` (`KAFKA_BOOTSTRAP`, `MONGO_URL`, `PRICE_PER_HOUR_USD`).
-    * Systemd refresh script rebuilds/re-ups Compose service after reboot.
-    * Provides REST API endpoints: `/health`, `/gpu/info`.
-    * Inserts into Mongo collections and computes cost-per-token metrics over sliding window.
+* **Build strategy**: Build application images **from Git subdirs** on-boot (VM3/VM4), avoiding rsync and ensuring source-of-truth parity.
+* **Resilience**: Option-2 systemd “refresh/run” units ensure services come back clean after stop/start and can be re-triggered idempotently.
+* **Verification**: Strong Makefile targets for each VM plus an **E2E workflow** that proves Producer→Kafka→Processor→Mongo→API.
 
 ---
 
@@ -61,39 +61,32 @@
 
 * **Bind mounts vs named volumes**:
 
-    * Kafka used bind mounts (needed permission fix).
-    * Mongo switched to named volumes for simplicity.
-* **Init scripts**:
-
-    * Kept `indexes.js` and `seed-gpus.js` separate for clarity.
-* **Processor build strategy**:
-
-    * Build-from-Git avoids user-data size limits but requires network and adds build time.
-* **Healthcheck choice**:
-
-    * Slim image lacks `curl`, so better to use `wget` or Python to check `/health`.
-* **Container naming**:
-
-    * Explicit name (`container_name: processor`) simplifies verification, but dynamic ID resolution is more flexible.
+    * Kafka bind mount (needed explicit `chown 1001:1001`).
+    * Mongo switched to **named volume** to avoid host-permission issues; less transparent but simpler.
+* **Healthcheck tooling**: Avoid `curl` assumptions on slim images; prefer wget/Python/TCP socket probes.
+* **One-shot vs long-running producers**: Kept producer one-shot for determinism in grading; could add a systemd **timer** if periodic data is desired.
+* **Compose `version`**: Dropped to silence deprecation warnings in modern Compose.
 
 ---
 
 ## Highlights
 
-* Kafka + Mongo provision cleanly, restart safely, and include healthchecks for grading.
-* Processor VM auto-builds from GitHub, exposes FastAPI endpoints, and integrates Kafka + Mongo.
-* Makefile now includes powerful verify flows and generic `exec-vmX` helpers.
-* Debugging flows captured: Kafka permissions issue, Mongo reachability, Processor healthcheck quirks.
+* **All four VMs** provision cleanly with Docker/Compose via cloud-init.
+* **VM1 Kafka** resilient with proper advertised listeners and topic creation.
+* **VM2 Mongo** initialized with indexes + seed data; robust healthcheck.
+* **VM3 Processor** builds from Git, exposes `/health` + `/gpu/info`, and writes computed metrics into Mongo.
+* **VM4 Producer** builds from Git, sends deterministic batches, and exits with code 0.
+* **E2E Verifier**: Single `make verify-workflow` demonstrates end-to-end correctness and includes a **pre-clean cap** to keep DB counts bounded for repeated runs.
 
 ---
 
 ## Next Steps
 
-* Extend templates for VM4 (Producers).
-* Add `verify-producers` and `verify-all` Make targets.
-* Document successful healthcheck + API outputs for Processor in CA1 README.
-* Note common pitfalls (Terraform `$${}` escaping, Bitnami UID fix, slim-image healthcheck tooling).
+* Add a `verify-all` wrapper that runs `verify-kafka`, `verify-mongo`, `verify-processor`, then `verify-workflow` and prints a single PASS/FAIL banner.
+* Optional: add a **systemd timer** on VM4 to auto-trigger the producer every N minutes.
+* Consider switching Kafka to a **named volume** for parity with Mongo, or keep the `chown` guard in place.
+* Add a small **CI check** that lints templates and Makefile targets (compose config, terraform validate, shellcheck).
 
 ---
 
-✅ **Status:** Kafka, Mongo, and Processor VM templates + Make targets are complete and reproducible. Verification flows are robust, with clear debugging paths. CA1 infrastructure is nearly end-to-end; only Producers remain.
+✅ **Status:** CA1 is fully operational across Kafka, Mongo, Processor, and Producer. The **end-to-end workflow verification passes**, and helper targets cover day-2 ops (triggering producers, resetting Mongo, pre-clean caps, and health checks).
