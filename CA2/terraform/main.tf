@@ -57,10 +57,14 @@ module "instances" {
 # Cluster
 #######################################
 module "cluster" {
-  source             = "./modules/cluster"
-  vpc_id             = module.network.vpc_id
-  subnet_id          = module.network.subnet_id
-  security_group_ids = [module.security_groups.k8s_nodes_sg_id, module.security_groups.admin_sg_id]
-  key_name           = var.ssh_key_name
-  tags               = var.tags
+  source    = "./modules/cluster"
+  name      = var.project_name
+  vpc_id    = module.network.vpc_id
+  subnet_id = module.network.subnet_id
+  sg_ids    = module.security_groups.sg_ids
+  key_name  = var.ssh_key_name
+  public_ip = true
+  tags      = var.tags
 }
+
+

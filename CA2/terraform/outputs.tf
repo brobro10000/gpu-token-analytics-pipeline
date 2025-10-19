@@ -69,7 +69,7 @@ output "control_plane_public_ip" {
 
 output "remote_kubeconfig_path" {
   description = "Path to kubeconfig on the control-plane (k3s default)"
-  value       = module.cluster.remote_kubeconfig_path
+  value       = "/etc/rancher/k3s/k3s.yaml"
 }
 
 output "worker_private_ips" {
