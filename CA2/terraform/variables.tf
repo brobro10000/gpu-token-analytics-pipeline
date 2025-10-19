@@ -1,82 +1,118 @@
 variable "project_name" {
-  type    = string
-  default = "ca2"
+  description = "Project/name prefix used across modules and in tags"
+  type        = string
+  default     = "ca2"
 }
+
 variable "aws_region" {
-  type    = string
-  default = "us-east-1"
+  description = "Deprecated: prefer 'region' variable; kept for back-compat (not used by provider)"
+  type        = string
+  default     = "us-east-1"
 }
+
 variable "aws_profile" {
-  type    = string
-  default = "terraform"
+  description = "AWS shared credentials profile name used by the AWS provider"
+  type        = string
+  default     = "terraform"
 }
+
 variable "vpc_cidr" {
-  type    = string
-  default = "10.0.0.0/16"
+  description = "IPv4 CIDR block for the VPC (e.g., 10.0.0.0/16)"
+  type        = string
+  default     = "10.0.0.0/16"
 }
+
 variable "subnet_cidr" {
-  type    = string
-  default = "10.0.1.0/24"
+  description = "IPv4 CIDR block for the public subnet (e.g., 10.0.1.0/24)"
+  type        = string
+  default     = "10.0.1.0/24"
 }
+
 variable "public_subnet" {
-  type    = bool
-  default = true
+  description = "If true, create a public subnet with Internet routing and auto-assigned public IPs"
+  type        = bool
+  default     = true
 }
-variable "ssh_key_name" { type = string }
-variable "my_ip_cidr" { type = string } # e.g., "203.0.113.25/32"
+
+variable "ssh_key_name" {
+  description = "EC2 key pair name to associate with instances and cluster nodes for SSH access"
+  type        = string
+}
+
+variable "my_ip_cidr" {
+  description = "Your public IP in CIDR notation (e.g., 203.0.113.25/32) to allow SSH/kubectl access"
+  type        = string
+}
 
 variable "region" {
-  type = string
+  description = "AWS region for all resources (used by the AWS provider)"
+  type        = string
+  default = "us-east-1"
 }
 
 variable "preferred_az" {
-  type    = string
-  default = ""
+  description = "Optional Availability Zone to prefer; falls back to an auto-selected supported AZ when empty"
+  type        = string
+  default     = ""
 }
 
 variable "name" {
-  type    = string
-  default = "ca2"
+  description = "Deprecated: use project_name instead (kept for back-compat)"
+  type        = string
+  default     = "ca2"
 }
 
 variable "tags" {
-  type    = map(string)
-  default = {}
+  description = "Additional tags to apply to all resources"
+  type        = map(string)
+  default     = {}
 }
 
 variable "key_name" {
-  type    = string
-  default = "ca0"
+  description = "Deprecated: use ssh_key_name instead (kept for back-compat)"
+  type        = string
+  default     = "ca0"
 }
 
 variable "public_ip" {
-  type    = bool
-  default = true
+  description = "Deprecated at root: module-specific flags are used instead"
+  type        = bool
+  default     = true
 }
 
 variable "vm1_instance_type" {
-  type    = string
-  default = "t3.small"
+  description = "Instance type for Kafka VM (legacy CA1)"
+  type        = string
+  default     = "t3.small"
 }
+
 variable "vm2_instance_type" {
-  type    = string
-  default = "t3.small"
+  description = "Instance type for MongoDB VM (legacy CA1)"
+  type        = string
+  default     = "t3.small"
 }
+
 variable "vm3_instance_type" {
-  type    = string
-  default = "t3.micro"
+  description = "Instance type for Processor VM (legacy CA1)"
+  type        = string
+  default     = "t3.micro"
 }
+
 variable "vm4_instance_type" {
-  type    = string
-  default = "t3.micro"
+  description = "Instance type for Producers VM (legacy CA1)"
+  type        = string
+  default     = "t3.micro"
 }
+
 variable "price_per_hour_usd" {
-  description = "Float value used by processor"
+  description = "Float value used by the processor app (pricing input)"
   type        = number
   default     = 0.85
 }
+
 variable "enable_ca1_instances" {
-  type    = bool
-  default = false
+  description = "Whether to provision the legacy CA1 instances module"
+  type        = bool
+  default     = false
 }
 

@@ -2,7 +2,9 @@ locals {
   tags = { Project = var.name }
 }
 
-# ---------- Admin SG ----------
+# =========================
+# Admin SG (SSH from your IP)
+# =========================
 resource "aws_security_group" "admin" {
   name        = "${var.name}-admin"
   description = "SSH from admin IP"
@@ -24,7 +26,9 @@ resource "aws_vpc_security_group_egress_rule" "admin_all_out" {
   ip_protocol       = "-1"
 }
 
-# ---------- K8s nodes SG (for k3s) ----------
+# =========================
+# k3s / Kubernetes node SG
+# =========================
 resource "aws_security_group" "k8s_nodes" {
   name        = "${var.name}-k8s-nodes"
   description = "Kubernetes (k3s) node ports"
@@ -50,8 +54,9 @@ resource "aws_vpc_security_group_ingress_rule" "k8s_kubelet" {
   to_port           = 10250
 }
 
-# Optional: NodePort range (cluster-internal)
+# Optional NodePorts (cluster-internal)
 resource "aws_vpc_security_group_ingress_rule" "k8s_nodeports" {
+  count             = var.enable_nodeports ? 1 : 0
   security_group_id = aws_security_group.k8s_nodes.id
   cidr_ipv4         = var.vpc_cidr_block
   ip_protocol       = "tcp"
@@ -65,55 +70,75 @@ resource "aws_vpc_security_group_egress_rule" "k8s_all_out" {
   ip_protocol       = "-1"
 }
 
-# ---------- CA1 app SGs (harmless to keep; not used in CA2 path) ----------
+# =========================
+# (Optional) CA1 app SGs
+# =========================
+# Toggle them on only if you still use the CA1 VM pattern.
+# They are safe to leave disabled for CA2 (Kubernetes-based) deployments.
+
+# Kafka
 resource "aws_security_group" "kafka" {
+  count  = var.enable_ca1_sgs ? 1 : 0
   name   = "${var.name}-kafka"
   vpc_id = var.vpc_id
   tags   = merge(local.tags, { Name = "${var.name}-kafka" })
 }
 
+# Mongo
 resource "aws_security_group" "mongo" {
+  count  = var.enable_ca1_sgs ? 1 : 0
   name   = "${var.name}-mongo"
   vpc_id = var.vpc_id
   tags   = merge(local.tags, { Name = "${var.name}-mongo" })
 }
 
+# Processor
 resource "aws_security_group" "processor" {
+  count  = var.enable_ca1_sgs ? 1 : 0
   name   = "${var.name}-processor"
   vpc_id = var.vpc_id
   tags   = merge(local.tags, { Name = "${var.name}-processor" })
 }
 
+# Producers
 resource "aws_security_group" "producers" {
+  count  = var.enable_ca1_sgs ? 1 : 0
   name   = "${var.name}-producers"
   vpc_id = var.vpc_id
   tags   = merge(local.tags, { Name = "${var.name}-producers" })
 }
 
-# Example app rules (from CA1)
+# CA1 app rules (only if enabled)
 resource "aws_vpc_security_group_ingress_rule" "kafka_from_processor" {
-  security_group_id            = aws_security_group.kafka.id
-  referenced_security_group_id = aws_security_group.processor.id
+  count                        = var.enable_ca1_sgs ? 1 : 0
+  security_group_id            = aws_security_group.kafka[0].id
+  referenced_security_group_id = aws_security_group.processor[0].id
   ip_protocol                  = "tcp"
   from_port                    = 9092
   to_port                      = 9092
 }
+
 resource "aws_vpc_security_group_ingress_rule" "kafka_from_producers" {
-  security_group_id            = aws_security_group.kafka.id
-  referenced_security_group_id = aws_security_group.producers.id
+  count                        = var.enable_ca1_sgs ? 1 : 0
+  security_group_id            = aws_security_group.kafka[0].id
+  referenced_security_group_id = aws_security_group.producers[0].id
   ip_protocol                  = "tcp"
   from_port                    = 9092
   to_port                      = 9092
 }
+
 resource "aws_vpc_security_group_ingress_rule" "mongo_from_processor" {
-  security_group_id            = aws_security_group.mongo.id
-  referenced_security_group_id = aws_security_group.processor.id
+  count                        = var.enable_ca1_sgs ? 1 : 0
+  security_group_id            = aws_security_group.mongo[0].id
+  referenced_security_group_id = aws_security_group.processor[0].id
   ip_protocol                  = "tcp"
   from_port                    = 27017
   to_port                      = 27017
 }
+
 resource "aws_vpc_security_group_ingress_rule" "processor_health_from_admin_ip" {
-  security_group_id = aws_security_group.processor.id
+  count             = var.enable_ca1_sgs ? 1 : 0
+  security_group_id = aws_security_group.processor[0].id
   cidr_ipv4         = var.my_ip_cidr
   ip_protocol       = "tcp"
   from_port         = 8080
