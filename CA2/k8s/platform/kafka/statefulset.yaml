@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: platform
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector: { matchLabels: { app: kafka } }
+  template:
+    metadata: { labels: { app: kafka } }
+    spec:
+      containers:
+        - name: broker
+          image: bitnami/kafka:3.7.0
+          ports: [{containerPort: 9092, name: client}]
+          env:
+            - { name: KAFKA_CFG_PROCESS_ROLES, value: "broker,controller" }
+            - { name: KAFKA_CFG_NODE_ID, value: "1" }
+            - { name: KAFKA_CFG_CONTROLLER_QUORUM_VOTERS, value: "1@kafka-0.kafka.platform.svc.cluster.local:9093" }
+            - { name: KAFKA_CFG_LISTENERS, value: "CLIENT://:9092,CONTROLLER://:9093,INTERNAL://:29092" }
+            - { name: KAFKA_CFG_ADVERTISED_LISTENERS, value: "CLIENT://kafka.platform.svc.cluster.local:9092,INTERNAL://kafka.platform.svc.cluster.local:29092" }
+            - { name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP, value: "CLIENT:PLAINTEXT,CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT" }
+            - { name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME, value: "INTERNAL" }
+            - { name: KAFKA_CFG_CONTROLLER_LISTENER_NAMES, value: "CONTROLLER" }
+            - { name: KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR, value: "1" }
+            - { name: KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR, value: "1" }
+          readinessProbe:
+            tcpSocket: { port: 9092 }
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - { name: data, mountPath: /bitnami/kafka }
+  volumeClaimTemplates: []   # MVP: use emptyDir for speed
+  podManagementPolicy: Parallel

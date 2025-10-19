@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: producers-config
+  namespace: app
+data:
+  RATE: "200"              # msgs/sec (example)
+  BATCH: "20"
+  SLEEP_SEC: "0.1"
+  TOPIC_METRIC: "gpu.metrics.v1"
+  TOPIC_TOKEN:  "token.usage.v1"
+  KAFKA_BOOTSTRAP: "kafka.platform.svc.cluster.local:9092"

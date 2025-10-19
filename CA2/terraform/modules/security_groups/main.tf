@@ -45,6 +45,30 @@ resource "aws_vpc_security_group_ingress_rule" "k8s_apiserver" {
   to_port           = 6443
 }
 
+resource "aws_vpc_security_group_ingress_rule" "k8s_intra_cluster" {
+  security_group_id            = aws_security_group.k8s_nodes.id
+  referenced_security_group_id = aws_security_group.k8s_nodes.id
+  ip_protocol                  = "-1"
+  from_port                    = 0
+  to_port                      = 0
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_from_workers" {
+  security_group_id            = aws_security_group.k8s_nodes.id
+  referenced_security_group_id = aws_security_group.k8s_nodes.id
+  ip_protocol                  = "tcp"
+  from_port                    = 6443
+  to_port                      = 6443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "ssh_from_admin_sg_to_workers" {
+  security_group_id            = aws_security_group.k8s_nodes.id
+  referenced_security_group_id = aws_security_group.admin.id
+  ip_protocol                  = "tcp"
+  from_port                    = 22
+  to_port                      = 22
+}
+
 # kubelet (cluster-internal)
 resource "aws_vpc_security_group_ingress_rule" "k8s_kubelet" {
   security_group_id = aws_security_group.k8s_nodes.id

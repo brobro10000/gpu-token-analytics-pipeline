@@ -15,6 +15,8 @@ module "network" {
     var.vm2_instance_type, # Mongo
     var.vm3_instance_type, # Processor
     var.vm4_instance_type, # Producers
+    var.control_instance_type,
+    var.worker_instance_type
   ]
 
   tags = var.tags
