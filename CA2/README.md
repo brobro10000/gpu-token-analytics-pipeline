@@ -35,7 +35,7 @@ This setup provisions a full working cluster (control plane + workers) on AWS EC
 ### 1️⃣ Create the Cluster via Terraform
 
 ```bash
-cd CA2
+cd CA2/terraform
 terraform init
 terraform apply
 ```
@@ -51,7 +51,8 @@ This will:
 ### 2️⃣ Bootstrap K3s
 
 ```bash
-make bootstrap
+# from /CA2
+make bootstrap-k3s
 ```
 
 This installs K3s on the control plane, generates and uploads the kubeconfig, and prepares the worker join token.
@@ -59,12 +60,14 @@ This installs K3s on the control plane, generates and uploads the kubeconfig, an
 Validate:
 
 ```bash
+make tunnel
+
 make status
 ```
 
 ---
 
-### 3️⃣ (Optional) Tunnel for Local kubectl
+### 3️⃣ Tunnel for Local kubectl
 
 If your kubeconfig points to `127.0.0.1:6443`, open a port-forward tunnel:
 
@@ -149,10 +152,7 @@ make K ARGS="-n app logs -l app=processor --tail=100"
 
 ```bash
 # Nodes
-KUBECONFIG=CA2/.kube/kubeconfig.yaml kubectl get nodes -o wide
-
-# Describe pods
-make KDESCRIBE NS=platform SEL=app=kafka
+KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes -o wide
 
 # Watch rollout
 make K ARGS="-n app rollout status deploy/processor -w"
