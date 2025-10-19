@@ -1,0 +1,10 @@
+#cloud-config
+package_update: true
+runcmd:
+  - curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --write-kubeconfig-mode=644 --cluster-cidr=10.244.0.0/16" sh -
+  # expose the node token briefly so workers can join automatically
+  - bash -lc 'TOKEN_PATH=/var/lib/rancher/k3s/server/node-token; while [ ! -f "$TOKEN_PATH" ]; do sleep 2; done; nohup busybox httpd -f -p 8081 -h /var/lib/rancher/k3s/server >/dev/null 2>&1 &'
+  # prep kubeconfig for ubuntu user (optional)
+  - mkdir -p /home/ubuntu/.kube
+  - cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
+  - chown -R ubuntu:ubuntu /home/ubuntu/.kube
