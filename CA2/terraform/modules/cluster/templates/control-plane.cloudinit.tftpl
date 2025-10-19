@@ -8,3 +8,54 @@ runcmd:
   - mkdir -p /home/ubuntu/.kube
   - cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/.kube/config
   - chown -R ubuntu:ubuntu /home/ubuntu/.kube
+write_files:
+  - path: /usr/local/bin/fix-kubeconfig.sh
+    permissions: '0755'
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      SRC=/etc/rancher/k3s/k3s.yaml
+      DST=/home/ubuntu/kubeconfig-external.yaml
+      # fetch our public IP from IMDS
+      PUBIP="$$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+
+      # wait for k3s to create kubeconfig
+      for i in {1..60}; do
+        [[ -s "$$SRC" ]] && break
+        sleep 5
+      done
+
+      if [[ ! -s "$$SRC" ]]; then
+        echo "ERROR: $$SRC never appeared" >&2
+        exit 1
+      fi
+
+      # fallback: if no public IP, keep 127.0.0.1 (still useful on the node)
+      if [[ -z "$${PUBIP}" ]]; then
+        cp "$$SRC" "$$DST"
+      else
+        sed "s#https:&]"$$DST"
+      chmod 0644 "$$DST"
+
+  - path: /etc/systemd/system/fix-kubeconfig.service
+    permissions: '0644'
+    owner: root:root
+    content: |
+      [Unit]
+      Description=Rewrite k3s kubeconfig with public IP
+      After=k3s.service
+      Wants=k3s.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/fix-kubeconfig.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now fix-kubeconfig.service

@@ -19,6 +19,6 @@ output "chosen_az_id" {
 }
 
 output "vpc_cidr_block" {
-  description = ""
+  description = "VPC IPv4 CIDR block"
   value       = aws_vpc.this.cidr_block
 }
