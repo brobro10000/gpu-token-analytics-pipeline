@@ -148,3 +148,6 @@ mongo-data/
 *.zip
 *.tar
 *.tgz
+
+.k3-token
+kubeconfig.yaml
