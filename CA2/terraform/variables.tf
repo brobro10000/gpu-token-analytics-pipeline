@@ -104,6 +104,19 @@ variable "vm4_instance_type" {
   default     = "t3.micro"
 }
 
+variable "control_instance_type" {
+  description = "Instance type for the k3s control-plane node"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "worker_instance_type" {
+  description = "Instance type for the k3s worker nodes"
+  type        = string
+  default     = "t3.small"
+}
+
+
 variable "price_per_hour_usd" {
   description = "Float value used by the processor app (pricing input)"
   type        = number

@@ -8,19 +8,24 @@ SSH_KEY      ?= ~/.ssh/ca0
 SSH_USER     ?= ubuntu
 SSH_OPTS   	 ?= -i $(SSH_KEY) -o StrictHostKeyChecking=no
 
-# ================== Cluster outputs ==================
-# Control-plane public IP (for SSH + kubeconfig copy)
-CP_PUB   := $(shell echo '$(TF_JSON)' | jq -r '.control_plane_public_ip.value // empty')
-
-# Workers (private IPs; we hop via the control-plane)
-W1_PRIV  := $(shell echo '$(TF_JSON)' | jq -r '.worker_private_ips.value[0] // empty')
-W2_PRIV  := $(shell echo '$(TF_JSON)' | jq -r '.worker_private_ips.value[1] // empty')
+KUBECONFIGL ?= .kube/kubeconfig.yaml
+K8S_DIR     ?= k8s
+KUBECTL_OPTS ?=
 
 AWS_PROFILE  ?= terraform
 AWS_REGION   ?= us-east-1
 
 # --- Helper: pull TF outputs (JSON) from ./terraform dir ---
 TF_JSON := $(shell terraform -chdir=terraform output -json 2>/dev/null)
+
+# ================== Cluster outputs ==================
+# Control-plane public IP (for SSH + kubeconfig copy)
+CP_PUB   := $(shell echo '$(TF_JSON)' | jq -r '.control_plane_public_ip.value // empty')
+REMOTE_KUBECONFIG  := $(shell echo '$(TF_JSON)' | jq -r '.remote_kubeconfig_path.value // empty')
+
+# Workers (private IPs; we hop via the control-plane)
+W1_PRIV  := $(shell echo '$(TF_JSON)' | jq -r '.worker_private_ips.value[0] // empty')
+W2_PRIV  := $(shell echo '$(TF_JSON)' | jq -r '.worker_private_ips.value[1] // empty')
 
 # --- Extract private IPs via jq ---
 VM1_PRIV := $(shell echo '$(TF_JSON)' | jq -r '.instance_private_ips.value.vm1_kafka')
@@ -44,29 +49,55 @@ KAFKA_BOOTSTRAP := $(VM1_PRIV):9092
 MONGO_URL       := mongodb://$(VM2_PRIV):27017/ca0
 PROCESSOR_HEALTH:= http://$(VM3_PRIV):8080/health
 
-# --- Common SSH command (adds some resilience) ---
-define SSH
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $(SSH_KEY) $(SSH_USER)@$(1)
-endef
+# ---------- Core commands ----------
+ensure-tf:
+	@terraform -chdir=terraform output >/dev/null 2>&1 || \
+	  (echo "Run 'terraform apply' in ./terraform first." && exit 1)
 
-.PHONY: help print addrs env verify verify-kafka verify-mongo verify-mongo-expanded verify-processor verify-producers \
-        verify-processor-expanded verify-producers verify-topics verify-mongo-doc smoke produce consume verify-workflow
+ensure-kubeconfig:
+	@[ -s "$(KUBECONFIGL)" ] || (echo "Local kubeconfig not found. Run 'make kubeconfig'." && exit 1)
+
+
+# --- Common SSH command (adds some resilience) ---
+
+.PHONY: help print addrs env fix-key-perms \
+        verify verify-kafka verify-topics verify-mongo verify-mongo-expanded \
+        verify-processor verify-processor-expanded verify-producers verify-workflow \
+        ssh-kafka ssh-mongo ssh-processor ssh-producers ssh-control-plane ssh-worker1 ssh-worker2 \
+        bootstrap-k3s tunnel kubeconfig kubectl-test status clean-kubeconfig \
+        get-token join-worker-1 join-worker-2 join-workers smoke ensure-tf ensure-kubeconfig \
+        addrs env print help put-key
 
 help:
-	@echo "CA2 validation helpers (using PRIVATE IPs from terraform outputs)"
+	@echo "CA2: cluster and validation helpers"
 	@echo
-	@echo "make addrs             # print private & public IPs"
-	@echo "make env               # print env exports for KAFKA_BOOTSTRAP / MONGO_URL"
-	@echo "make verify            # run all service checks"
-	@echo "make verify-kafka      # list topics on VM1 (expects bitnami kafka)"
-	@echo "make verify-mongo      # ping mongod on VM2"
-	@echo "make verify-mongo-expanded"
-	@echo "make verify-processor  # curl /health on VM3"
-	@echo "make verify-processor-expanded"
-	@echo "make verify-producers  # tail logs on VM4"
-	@echo "make smoke             # simple E2E: create topics (idempotent) + list"
+	@echo "Terraform/outputs:"
+	@echo "  make addrs                - Print private and public IPs from terraform outputs"
+	@echo "  make env                  - Print env exports (KAFKA_BOOTSTRAP, MONGO_URL, PROCESSOR_HEALTH)"
 	@echo
-	@echo "Override SSH_KEY, SSH_USER, AWS_PROFILE, AWS_REGION as needed."
+	@echo "Kubernetes:"
+	@echo "  make kubeconfig           - Copy kubeconfig from control-plane"
+	@echo "  make status               - kubectl get nodes and pods (requires KUBECONFIG)"
+	@echo "  make kubectl-test         - Quick kubectl get nodes"
+	@echo "  make clean-kubeconfig     - Remove local kubeconfig"
+	@echo "  make tunnel               - SSH port-forward 6443 to control-plane"
+	@echo
+	@echo "SSH convenience:"
+	@echo "  make ssh-control-plane    - SSH to control-plane"
+	@echo "  make ssh-worker1|ssh-worker2 - SSH to workers via control-plane"
+	@echo "  make ssh-kafka|ssh-mongo|ssh-processor|ssh-producers - SSH to legacy VMs (if enabled)"
+	@echo
+	@echo "Cluster helpers:"
+	@echo "  make get-token            - Fetch K3s server token from control-plane"
+	@echo "  make join-worker-1|join-worker-2|join-workers - Join worker(s) to control-plane"
+	@echo
+	@echo "Validation:"
+	@echo "  make verify               - Run all service checks"
+	@echo "  make verify-kafka|verify-mongo|verify-processor|verify-producers"
+	@echo "  make verify-workflow      - End-to-end check"
+	@echo "  make smoke                - Create topics and list (idempotent)"
+	@echo
+	@echo "Environment overrides: SSH_KEY=$(SSH_KEY) SSH_USER=$(SSH_USER) AWS_PROFILE=$(AWS_PROFILE) AWS_REGION=$(AWS_REGION)"
 
 print: addrs
 
@@ -98,100 +129,69 @@ ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $(SSH_KEY) $(1)
 endef
 
 # Optional: ensure key permissions are safe (no-op if already 600)
-.PHONY: fix-key-perms
 fix-key-perms:
 	@if [ -f "$(SSH_KEY)" ]; then chmod 600 "$(SSH_KEY)" || true; fi
 
+put-key:
+	@[ -n "$(CP_PUB)" ] || (echo "control_plane_public_ip missing; run terraform apply."; exit 1)
+	@echo "🔐 Copying local key $(SSH_KEY) to control plane..."
+	@scp $(SSH_OPTS) $(SSH_KEY) $(SSH_USER)@$(CP_PUB):~/.ssh/ca0
+	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) 'chmod 600 ~/.ssh/ca0 && echo "✅ Key installed at ~/.ssh/ca0"'
+
 # ------------------------------
-# VALIDATION TARGETS
+# KUBECTL Wrapper (shortcut for arbitrary commands)
 # ------------------------------
-verify: verify-kafka verify-mongo verify-processor verify-producers
-	@echo "All basic checks executed."
+# Usage: make K ARGS="get pods -A -o wide"
+.PHONY: K
+K: ensure-kubeconfig
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(ARGS)
 
-verify-kafka: fix-key-perms
-	@if [ -z "$(VM1_PUB)" ]; then echo "VM1 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM1/Kafka: listing topics (using PRIVATE bootstrap $(KAFKA_BOOTSTRAP))"
-	@$(call SSH,$(VM1_HOST)) 'docker ps && docker exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092 || true'
+# ------------------------------
+# VERIFY TARGETS
+# ------------------------------
+.PHONY: verify-all verify-kafka verify-mongo verify-processor verify-producers
 
-verify-topics: verify-kafka
+verify-all: verify-kafka verify-mongo verify-processor verify-producers
+	@echo "✅ All verify checks executed."
 
-verify-mongo: fix-key-perms
-	@if [ -z "$(VM2_PUB)" ]; then echo "VM2 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM2/Mongo: ping mongod"
-	@$(call SSH,$(VM2_HOST)) 'docker ps && docker exec -i mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" || true'
+# --- Kafka ---
+verify-kafka:
+	@echo "🔎 [Kafka] StatefulSet + Pods"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get sts kafka || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get pods -l app=kafka -o wide || true
+	@echo "🪵 [Kafka] Recent logs"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform logs -l app=kafka --tail=40 || true
+	@echo "🧩 [Kafka] Service info"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get svc kafka -o wide || true
 
-verify-mongo-expanded: fix-key-perms
-	@if [ -z "$(VM2_PUB)" ]; then echo "VM2 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM2/Mongo: docker ps (basic status)"
-	@$(call SSH,$(VM2_HOST)) 'docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"'
+# --- Mongo ---
+verify-mongo:
+	@echo "🔎 [Mongo] StatefulSet + Pods"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get sts mongo || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get pods -l app=mongo -o wide || true
+	@echo "🪵 [Mongo] Recent logs"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform logs -l app=mongo --tail=40 || true
+	@echo "🧩 [Mongo] Service info"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n platform get svc mongo -o wide || true
 
-	@echo ">> VM2/Mongo: container health status"
-	@$(call SSH,$(VM2_HOST)) 'docker inspect --format="{{.State.Health.Status}}" mongodb || echo "no-healthcheck"'
+# --- Processor ---
+verify-processor:
+	@echo "🔎 [Processor] Deployment + Pods"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app get deploy processor || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app get pods -l app=processor -o wide || true
+	@echo "🪵 [Processor] Recent logs"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app logs -l app=processor --tail=40 || true
+	@echo "🌐 [Processor] Health endpoint"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app exec -it $$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get pod -l app=processor -o name | head -n 1) -- \
+		curl -sf http://localhost:8080/health || echo "Health check failed" || true
 
-	@echo ">> VM2/Mongo: ping mongod"
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" || true'
-
-	@echo ">> VM2/Mongo: list databases"
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.adminCommand({ listDatabases: 1 }).databases" || true'
-
-	@echo ">> VM2/Mongo: check GPU seed docs"
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh ca2 --quiet --eval "db.gpus.find().pretty()" || true'
-
-	@echo ">> VM2/Mongo: check indexes"
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh ca2 --quiet --eval "printjson(db.gpu_metrics.getIndexes()); printjson(db.token_usage.getIndexes()); printjson(db.gpus.getIndexes());" || true'
-
-
-verify-processor: fix-key-perms
-	@if [ -z "$(VM3_PUB)" ]; then echo "VM3 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM3/Processor: health check (curl localhost since service binds on 8080)"
-	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health || (echo "health check failed" && exit 1)'
-
-verify-processor-expanded: fix-key-perms
-	@if [ -z "$(VM3_PUB)" ]; then echo "VM3 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM3/Processor: docker ps (status/ports)"
-	@$(call SSH,$(VM3_HOST)) 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"'
-
-	@echo ">> VM3/Processor: container health status"
-	@$(call SSH,$(VM3_HOST)) 'docker inspect --format="{{.State.Health.Status}}" processor 2>/dev/null || echo "no-healthcheck"'
-
-	@echo ">> VM3/Processor: health endpoint"
-	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health || (echo "health check failed" && exit 1)'
-
-	@echo ">> VM3/Processor: show runtime env (.env)"
-	@$(call SSH,$(VM3_HOST)) 'echo "--- /opt/processor/.env ---"; sed -n "1,120p" /opt/processor/.env || true'
-
-	@echo ">> VM3/Processor: resolve Kafka & Mongo from .env"
-	@$(call SSH,$(VM3_HOST)) 'KAFKA=$$(sed -n "s/^KAFKA_BOOTSTRAP=\\(.*\\)/\\1/p" /opt/processor/.env); echo "KAFKA_BOOTSTRAP=$$KAFKA"; \
-	                           MONGO=$$(sed -n "s/^MONGO_URL=\\(.*\\)/\\1/p" /opt/processor/.env); echo "MONGO_URL=$$MONGO"'
-
-	@echo ">> VM3/Processor: reachability checks (nc) to Kafka & Mongo"
-	@$(call SSH,$(VM3_HOST)) 'set -e; \
-	  KAFKA=$$(sed -n "s/^KAFKA_BOOTSTRAP=\\(.*\\)/\\1/p" /opt/processor/.env); \
-	  KHOST=$${KAFKA%:*}; KPORT=$${KAFKA##*:}; \
-	  echo "Probing Kafka $$KHOST:$$KPORT"; nc -zv -w2 "$$KHOST" "$$KPORT"; \
-	  MONGO=$$(sed -n "s/^MONGO_URL=mongodb:\\/\\/\\([^:]*\\):\\([0-9]*\\).*/\\1 \\2/p" /opt/processor/.env); \
-	  set -- $$MONGO; MH=$$1; MP=$$2; echo "Probing Mongo $$MH:$$MP"; nc -zv -w2 "$$MH" "$$MP"; true'
-
-	@echo ">> VM3/Processor: confirm process is listening on 8080"
-	@$(call SSH,$(VM3_HOST)) 'ss -ltnp | grep ":8080" || (echo "nothing listening on 8080" && exit 1)'
-
-	@echo ">> VM3/Processor: GET /gpu/info (best-effort)"
-	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/gpu/info || true'
-
-	@echo ">> VM3/Processor: container user & image (sanity)"
-	@$(call SSH,$(VM3_HOST)) 'docker inspect --format="User={{.Config.User}} Image={{.Config.Image}}" processor || true'
-
-	@echo ">> VM3/Processor: recent logs (last 120 lines)"
-	@$(call SSH,$(VM3_HOST)) 'docker logs --tail=120 processor || true'
-
-	@echo ">> VM3/Processor: if unhealthy, dump full health details"
-	@$(call SSH,$(VM3_HOST)) 'HS=$$(docker inspect --format="{{.State.Health.Status}}" processor 2>/dev/null || echo "unknown"); \
-	  if [ "$$HS" != "healthy" ]; then echo "--- Healthcheck JSON ---"; docker inspect processor | sed -n "1,200p"; fi || true'
-
-verify-producers: fix-key-perms
-	@if [ -z "$(VM4_PUB)" ]; then echo "VM4 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
-	@echo ">> VM4/Producers: recent logs"
-	@$(call SSH,$(VM4_HOST)) 'docker ps && docker logs --tail=100 producer || true'
+# --- Producers ---
+verify-producers:
+	@echo "🔎 [Producers] Deployment + Pods"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app get deploy producers || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app get pods -l app=producers -o wide || true
+	@echo "🪵 [Producers] Recent logs"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app logs -l app=producers --tail=40 || true
 
 # verify-workflow: End-to-end check with pre-clean if counts exceed a cap
 # Usage: make verify-workflow [MAX_DOCS=100]
@@ -247,22 +247,148 @@ verify-workflow: fix-key-perms
 	@echo "=== ✅ Workflow verified end-to-end ==="
 
 
-ssh-kafka:     ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM1_PUB)
-ssh-mongo:     ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM2_PUB)
-ssh-processor: ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM3_PUB)
-ssh-producers: ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM4_PUB)
-
-ssh-control-plane:
+ssh-kafka: ensure-tf    ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM1_PUB)
+ssh-mongo: ensure-tf    ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM2_PUB)
+ssh-processor: ensure-tf ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM3_PUB)
+ssh-producers: ensure-tf ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM4_PUB)
+ssh-control-plane: ensure-tf
 	@echo "Connecting to CONTROL PLANE: $(CP_PUB)"
 	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB)
 
-ssh-worker1:
-	@echo "Connecting to WORKER 1 (via control-plane) ..."
-	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) ssh $(SSH_USER)@$(W1_PRIV)
+ssh-worker1: ensure-tf put-key
+	@[ -n "$(W1_PRIV)" ] || (echo "Worker #1 private IP missing"; exit 1)
+	@echo "Connecting to WORKER 1 (via control-plane, ProxyJump) ..."
+	@ssh -tt $(SSH_OPTS) -J $(SSH_USER)@$(CP_PUB) $(SSH_USER)@$(W1_PRIV) < /dev/tty
 
-ssh-worker2:
+ssh-worker2: ensure-tf put-key
 	@echo "Connecting to WORKER 2 (via control-plane) ..."
 	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) ssh $(SSH_USER)@$(W2_PRIV)
+
+
+bootstrap-k3s:
+	@echo "🚀 Bootstrapping K3s on control plane..."
+	@ssh -tt -i ~/.ssh/ca0 -o StrictHostKeyChecking=no ubuntu@$(CP_PUB) '\
+		set -euo pipefail; \
+		echo "[INFO] Installing K3s (server)..."; \
+		PUB_IP=$$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || echo ""); \
+		PRIV_IP=$$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4 || echo ""); \
+		curl -sfL https://get.k3s.io | \
+		  INSTALL_K3S_EXEC="server --write-kubeconfig-mode=644 --tls-san $$PUB_IP --tls-san $$PRIV_IP" \
+		  sh -; \
+		echo "[INFO] Waiting for kubeconfig..."; \
+		for i in $$(seq 1 30); do [ -f /etc/rancher/k3s/k3s.yaml ] && break || sleep 3; done; \
+		cp /etc/rancher/k3s/k3s.yaml /home/ubuntu/kubeconfig-external.yaml; \
+		chown ubuntu:ubuntu /home/ubuntu/kubeconfig-external.yaml; \
+		if [ -n "$$PUB_IP" ]; then \
+		  sed -i "s|server: https://.*:6443|server: https://$$PUB_IP:6443|g" /home/ubuntu/kubeconfig-external.yaml; \
+		fi; \
+		echo "[INFO] K3s installed and kubeconfig exported."; \
+		exit 0'
+
+	@echo "📥 Pulling kubeconfig to local machine..."
+	@mkdir -p .kube
+	@scp -i ~/.ssh/ca0 ubuntu@$(CP_PUB):/home/ubuntu/kubeconfig-external.yaml .kube/kubeconfig.yaml
+	@echo "✅ Done! You can now run:"
+	@echo "   KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes -o wide"
+
+
+# ---------- Kubeconfig pull ----------
+kubeconfig: ensure-tf
+	@[ -n "$(CP_PUB)" ] || (echo "control_plane_public_ip missing. Run terraform apply first." && exit 1)
+	@[ -n "$(REMOTE_KUBECONFIG)" ] || (echo "remote_kubeconfig_path missing. Check your module output." && exit 1)
+	@mkdir -p .kube
+	@echo "Pulling kubeconfig from $(CP_PUB):$(REMOTE_KUBECONFIG)..."
+	@scp $(SSH_OPTS) $(SSH_USER)@$(CP_PUB):$(REMOTE_KUBECONFIG) .kube/kubeconfig.yaml
+	@echo "✅ Saved to .kube/kubeconfig.yaml"
+
+# ---------- Convenience ----------
+kubectl-test: ensure-kubeconfig
+	@KUBECONFIG=$(KUBECONFIGL) kubectl get nodes -o wide
+
+status: ensure-kubeconfig
+	@KUBECONFIG=$(KUBECONFIGL) kubectl get nodes -o wide
+	@echo "----"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl get pods -A -o wide
+
+clean-kubeconfig:
+	@rm -f $(KUBECONFIGL)
+	@echo "🧹 Removed $(KUBECONFIGL)"
+
+# -------- Worker join helpers --------
+
+# Fetch the K3s server token from the control-plane
+get-token:
+	@[ -n "$(CP_PUB)" ] || (echo "control_plane_public_ip missing. Run terraform apply."; exit 1)
+	@echo "🔑 Fetching K3s server token from control-plane..."
+	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) 'sudo cat /var/lib/rancher/k3s/server/node-token' > .k3s_token
+	@chmod 600 .k3s_token
+	@echo "Saved token to .k3s_token"
+
+# Join a specific worker via control-plane jump
+join-worker-1: get-token
+	@[ -n "$(W1_PRIV)" ] || (echo "worker #1 private IP missing from TF outputs"; exit 1)
+	@echo "🤝 Joining worker-1 ($(W1_PRIV)) to control-plane..."
+	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) "\
+	  set -euo pipefail; \
+	  TOKEN=\$$(cat /home/ubuntu/.k3s_token 2>/dev/null || true); \
+	  if [ -z \"\$$TOKEN\" ]; then sudo cat /var/lib/rancher/k3s/server/node-token > /home/ubuntu/.k3s_token; TOKEN=\$$(cat /home/ubuntu/.k3s_token); fi; \
+	  SERVER_PRIV=\$$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4); \
+	  echo 'Using SERVER_PRIV='\"\$$SERVER_PRIV\"; \
+	  ssh -o StrictHostKeyChecking=no $(SSH_USER)@$(W1_PRIV) '\
+	    curl -sfL https://get.k3s.io | \
+	      K3S_URL=https://'\$$SERVER_PRIV':6443 \
+	      K3S_TOKEN='\$$TOKEN' \
+	      INSTALL_K3S_EXEC=\"agent --node-name worker-1\" \
+	      sh -s - agent \
+	  '; \
+	  echo 'worker-1 joined' \
+	"
+
+join-worker-2: get-token
+	@[ -n "$(W2_PRIV)" ] || (echo "worker #2 private IP missing from TF outputs"; exit 1)
+	@echo "🤝 Joining worker-2 ($(W2_PRIV)) to control-plane..."
+	@ssh $(SSH_OPTS) $(SSH_USER)@$(CP_PUB) "\
+	  set -euo pipefail; \
+	  TOKEN=\$$(cat /home/ubuntu/.k3s_token 2>/dev/null || true); \
+	  if [ -z \"\$$TOKEN\" ]; then sudo cat /var/lib/rancher/k3s/server/node-token > /home/ubuntu/.k3s_token; TOKEN=\$$(cat /home/ubuntu/.k3s_token); fi; \
+	  SERVER_PRIV=\$$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4); \
+	  echo 'Using SERVER_PRIV='\"\$$SERVER_PRIV\"; \
+	  ssh -o StrictHostKeyChecking=no $(SSH_USER)@$(W2_PRIV) '\
+	    curl -sfL https://get.k3s.io | \
+	      K3S_URL=https://'\$$SERVER_PRIV':6443 \
+	      K3S_TOKEN='\$$TOKEN' \
+	      INSTALL_K3S_EXEC=\"agent --node-name worker-2\" \
+	      sh -s - agent \
+	  '; \
+	  echo 'worker-2 joined' \
+	"
+
+join-workers: join-worker-1 join-worker-2
+	@echo "✅ Workers joined. Run: make status"
+
+tunnel:
+	@[ -n "$(CP_PUB)" ] || (echo "No control_plane_public_ip; run terraform apply." && exit 1)
+	@echo "Forwarding localhost:6443 -> control-plane:6443 (Ctrl-C to close)"
+	@ssh -i $(SSH_KEY) -N -L 6443:127.0.0.1:6443 $(SSH_USER)@$(CP_PUB)
+
+
+.PHONY: deploy undeploy namespaces
+
+namespaces: ensure-kubeconfig
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) create ns platform --dry-run=client -o yaml | \
+	  KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -f -
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) create ns app --dry-run=client -o yaml | \
+	  KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -f -
+
+deploy: ensure-kubeconfig namespaces
+	@echo "🚀 Deploying all Kubernetes manifests..."
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -R -f $(K8S_DIR)
+	@echo "✅ All manifests applied."
+
+undeploy: ensure-kubeconfig
+	@echo "🧹 Deleting all Kubernetes resources..."
+	@KUBECONFIG=$(KUBECONFIGL) kubectl delete -R -f $(K8S_DIR) || true
+	@echo "✅ All manifests deleted."
 
 # ------------------------------
 # Simple smoke: ensure topics exist then list (idempotent)
@@ -270,7 +396,7 @@ ssh-worker2:
 smoke:
 	@if [ -z "$(VM1_PUB)" ]; then echo "VM1 public IP missing; cannot SSH. See 'make addrs'."; exit 1; fi
 	@echo ">> Creating topics if not exists on VM1 then listing"
-	@$(call SSH,$(VM1_PUB)) '\
+	@$(call SSH,$(VM1_HOST)) '\
 	  docker exec kafka kafka-topics.sh --create --if-not-exists --topic gpu.metrics.v1   --bootstrap-server localhost:9092; \
 	  docker exec kafka kafka-topics.sh --create --if-not-exists --topic token.usage.v1  --bootstrap-server localhost:9092; \
 	  docker exec kafka kafka-topics.sh --list --bootstrap-server localhost:9092 \

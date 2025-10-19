@@ -7,6 +7,11 @@ data "aws_ssm_parameter" "ubuntu_24_04_amd64" {
   name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
+resource "random_password" "k3s_token" {
+  length  = 48
+  special = false
+}
+
 #########################
 # Control-plane instance
 #########################
@@ -19,7 +24,10 @@ resource "aws_instance" "control_plane" {
   associate_public_ip_address = var.public_ip
 
   # cloud-init: install k3s server and make kubeconfig world-readable (mode 644)
-  user_data = templatefile("${path.module}/templates/control-plane.cloudinit.tftpl", {})
+  user_data = templatefile("${path.module}/templates/control-plane.cloudinit.tftpl", {
+    K3S_TOKEN = random_password.k3s_token.result
+    NODE_NAME = "${var.name}-cp"
+  })
 
   # keep parity with CA1
   user_data_replace_on_change = true
@@ -42,13 +50,15 @@ resource "aws_instance" "worker" {
   ami                         = data.aws_ssm_parameter.ubuntu_24_04_amd64.value
   instance_type               = var.worker_instance_type
   subnet_id                   = var.subnet_id
-  vpc_security_group_ids      = compact([lookup(var.sg_ids, "k8s_nodes", null), lookup(var.sg_ids, "admin", null)])
+  vpc_security_group_ids      = [var.sg_ids.admin, var.sg_ids.k8s_nodes]
   key_name                    = var.key_name
   associate_public_ip_address = var.public_ip
 
   # cloud-init joins using the control plane's private IP
   user_data = templatefile("${path.module}/templates/worker.cloudinit.tftpl", {
+    K3S_TOKEN = random_password.k3s_token.result
     CONTROL_PLANE_IP = aws_instance.control_plane.private_ip
+    NODE_NAME     = "${var.name}-worker-${count.index}"
   })
 
   user_data_replace_on_change = true

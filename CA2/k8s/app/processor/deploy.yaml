@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processor
+  namespace: app
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: processor } }
+  template:
+    metadata: { labels: { app: processor } }
+    spec:
+      containers:
+        - name: processor
+          image: ghcr.io/your-org/processor:ca2   # <-- replace with your built image
+          envFrom:
+            - configMapRef: { name: processor-config }
+            - secretRef:    { name: processor-secrets }
+          ports:
+            - { containerPort: 8080, name: http }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+            periodSeconds: 5

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: producers
+  namespace: app
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: producers } }
+  template:
+    metadata: { labels: { app: producers } }
+    spec:
+      containers:
+        - name: producers
+          image: ghcr.io/your-org/producers:ca2   # <-- replace with your built image
+          envFrom:
+            - configMapRef: { name: producers-config }
+          resources:
+            requests: { cpu: "100m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }

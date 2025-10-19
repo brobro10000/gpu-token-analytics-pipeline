@@ -20,3 +20,7 @@ output "worker_private_ips" {
   description = "Private IPs of worker nodes"
   value       = [for w in aws_instance.worker : w.private_ip]
 }
+
+output "remote_kubeconfig_path" {
+  value = "/home/ubuntu/kubeconfig-external.yaml"
+}
