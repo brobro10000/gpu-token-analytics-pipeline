@@ -11,7 +11,7 @@ spec:
     spec:
       containers:
         - name: processor
-          image: ghcr.io/your-org/processor:ca2   # <-- replace with your built image
+          image: ghcr.io/your-org/processor:ca2
           envFrom:
             - configMapRef: { name: processor-config }
             - secretRef:    { name: processor-secrets }
