@@ -150,4 +150,5 @@ mongo-data/
 *.tgz
 
 .k3-token
-kubeconfig.yaml
+.kube/
+kubeconfig*.yaml

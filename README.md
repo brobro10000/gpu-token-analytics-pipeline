@@ -84,7 +84,40 @@ gpu-token-analytics-pipeline/
 ├── CA2/
 │   ├── README.md
 │   ├── architecture.md
-│   └── conversation-summary.md
+│   ├── conversation-summary.md
+│   ├── diagrams/
+│   ├── docs/
+│   ├── screenshots/
+│   ├── Makefile
+│   ├── k8s/
+│   │   ├── platform/
+│   │   │   ├── kafka/
+│   │   │   │   ├── statefulset.yaml
+│   │   │   │   └── svc.yaml
+│   │   │   └── mongo/
+│   │   │       ├── statefulset.yaml
+│   │   │       └── svc.yaml
+│   │   └── app/
+│   │       ├── processor/
+│   │       │   └── deploy.yaml
+│   │       └── producers/
+│   │           ├── deploy.yaml
+│   │           ├── hpa.yaml
+│   │           └── config.yaml
+│   └── terraform/
+│       ├── Makefile
+│       ├── providers.tf
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       └── modules/
+│           ├── vpc/
+│           ├── security_groups/
+│           ├── network/
+│           ├── cluster/
+│           │   └── templates/
+│           └── instances/
+│               └── templates/
 ├── CA3/
 │   ├── README.md
 │   ├── architecture.md
@@ -427,3 +460,200 @@ make down
 ![tf destroy](CA1/screenshots/tf-destroy-07.png)
 
 ![verify destroy](CA1/screenshots/verify-destroy-12.png)
+
+
+## CA2 — Orchestrated (Terraform + K3s on AWS)
+
+Goal: Run the GPU analytics pipeline on a lightweight Kubernetes cluster (K3s) provisioned with Terraform, then deploy Kafka, MongoDB, Processor, and Producers as Kubernetes resources with Makefile automation.
+
+Authoritative references for CA2:
+- CA2 overview and workflow: CA2/README.md
+- Architecture and decisions: CA2/architecture.md
+- Conversation and evolution: CA2/conversation-summary.md
+
+### 1) Software Stack and Layout (Kubernetes)
+- Control plane + N worker nodes (EC2) with K3s installed
+- Namespaces: platform (Kafka, MongoDB), app (Processor, Producers)
+- Services:
+  - Kafka (StatefulSet, headless Service)
+  - MongoDB (StatefulSet, ClusterIP Service)
+  - Processor (Deployment)
+  - Producers (Deployment + optional HPA)
+
+### 2) Environment Provisioning (Terraform)
+Prereqs (local): Terraform ≥ 1.6, AWS CLI v2 configured, existing EC2 key pair, jq, curl.
+
+Recommended flow using the CA2 Terraform Makefile (auto-detects your public IP for my_ip_cidr):
+
+```bash
+cd CA2/terraform
+make deploy        # init + plan (with my_ip_cidr) + apply
+make outputs       # show VPC/SG/instance outputs (cp IP, worker priv IPs)
+```
+
+Notes:
+- Override AWS profile/region as needed: `AWS_PROFILE=terraform AWS_REGION=us-east-1 make deploy`
+- Provide an explicit EC2 keypair name if not set in tfvars: `SSH_KEY_NAME=my-key make deploy`
+- Security groups are created to allow:
+  - 22/tcp from my_ip_cidr (admin)
+  - 6443/tcp for kube-apiserver from my_ip_cidr
+  - NodePorts (30000–32767) within the VPC (tunable in security_groups module)
+
+### 3) Kubeconfig and Cluster Access
+K3s is installed on the control plane via cloud-init. Copy the kubeconfig locally with the CA2 root Makefile:
+
+```bash
+cd CA2
+make bootstrap-k3s    # scp /etc/rancher/k3s/k3s.yaml from control-plane → .kube/kubeconfig.yaml
+make status        # KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes/pods
+```
+
+Tip: If your kubeconfig references 127.0.0.1, run a temporary tunnel while using kubectl:
+
+```bash
+make tunnel        # forwards localhost:6443 → control-plane:6443
+```
+
+### 4) Deploy Kubernetes Manifests
+Apply all resources under CA2/k8s/ (namespaces, platform, app):
+
+```bash
+cd CA2
+make deploy        # creates namespaces (idempotent), applies all manifests recursively
+make status       # KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes/pods
+```
+
+### 5) Data Pipeline Verification
+Use the CA2 Makefile helpers that read Terraform outputs to find node/VM addresses and verify services.
+
+Common targets:
+
+```bash
+make addrs         # print private/public IPs from terraform outputs
+make env           # print KAFKA_BOOTSTRAP / MONGO_URL / PROCESSOR_HEALTH (private IPs)
+
+make verify        # runs verify-kafka, verify-mongo, verify-processor, verify-producers
+make verify-workflow MAX_DOCS=100 WAIT_SEC=5  # end-to-end baseline→nudge→delta checks
+
+# Spot checks
+make verify-kafka
+make verify-mongo
+make verify-processor
+make verify-producers
+```
+
+Optional: HPA scale test for producers (requires metrics-server):
+
+```bash
+make verify-scale-hpa HPA_NAME=producers BURST_RATE=500 HPA_TIMEOUT_SEC=300
+```
+
+### 6) Security Notes
+- SSH: key-only; control plane exposes 22/tcp to my_ip_cidr
+- Kubernetes API: 6443/tcp to my_ip_cidr
+- Intra-cluster: kubelet and NodePorts allowed within VPC CIDR only
+- App endpoints are cluster-internal (ClusterIP/Headless) and not Internet-exposed
+
+### 7) Deliverables Checklist (what to include in CA2)
+- Terraform evidence: plan/apply logs or screenshots; `make outputs`
+- Terraform outputs: control_plane_public_ip, worker_private_ips, VPC/Subnet IDs
+- Kubeconfig acquisition and `make status` showing nodes Ready
+- Deployed resources: screenshots of `kubectl get pods -A` and verify targets
+- Architecture link: CA2/architecture.md (cluster + namespaces)
+- Short demo: `make verify-workflow` showing producers → Kafka → processor → MongoDB deltas
+- Any deviations from the reference stack and rationale
+
+### 8) Grading Mapping
+- Correctness & Completeness: cluster up, services running, E2E verified via Makefile
+- Security Controls: scoped SGs (admin IP, VPC-only NodePorts), SSH keys only
+- Documentation & Diagrams: this README section + CA2/architecture.md + CA2/README.md
+- Demo Quality: concise capture of verify/verify-workflow and status outputs
+- Reproducibility: Terraform state, tfvars, and Makefile commands
+
+### 9) Quickstart (TL;DR)
+```bash
+# 1) Provision infra
+cd CA2/terraform
+make deploy && make outputs
+
+# 2) Pull kubeconfig and inspect cluster
+cd ..
+make kubeconfig
+make status
+
+# 3) Deploy everything
+make deploy
+
+# 4) Verify
+make verify
+make verify-workflow MAX_DOCS=100
+```
+
+### 10) Teardown
+```bash
+cd CA2/terraform
+make down
+```
+
+
+### CA2 — Screenshots (by command order)
+
+- Terraform deploy (part 1)
+  
+  ![make tf deploy 1](CA2/screenshots/make_tf_deploy_1.png)
+
+- Terraform deploy (part 2)
+  
+  ![make tf deploy 2](CA2/screenshots/make_tf_deploy_2.png)
+
+- Open tunnel to API server
+  
+  ![make tunnel](CA2/screenshots/make_tunnel_3.png)
+
+- Bootstrap K3s and export kubeconfig
+  
+  ![make bootstrap-k3s](CA2/screenshots/make_bootstrap-k3s_4.png)
+
+- Cluster status (nodes/pods)
+  
+  ![make status 1](CA2/screenshots/make_status_5.png)
+
+- Apply Kubernetes manifests
+  
+  ![make deploy (k8s)](CA2/screenshots/make_kube_deploy_6.png)
+
+- Cluster status after deploy
+  
+  ![make status 2](CA2/screenshots/make_status_7.png)
+
+- Verify Kafka
+  
+  ![make verify-kafka](CA2/screenshots/make_verify-kafka_8.png)
+
+- Verify MongoDB
+  
+  ![make verify-mongo](CA2/screenshots/make_verify-mongo_9.png)
+
+- Verify Producers
+  
+  ![make verify-producers](CA2/screenshots/make_verify-producers_10.png)
+
+- Verify Processor
+  
+  ![make verify-processor](CA2/screenshots/make_verify-processor_11.png)
+
+- Verify end-to-end workflow
+  
+  ![make verify-workflow](CA2/screenshots/make_verify-workflow_12.png)
+
+- Verify HPA scale (optional)
+  
+  ![make verify-scale-hpa](CA2/screenshots/make_verify-scale-hpa_13.png)
+
+- Undeploy Kubernetes manifests
+  
+  ![make undeploy (k8s)](CA2/screenshots/make_kube_undeploy_14.png)
+
+- Terraform destroy
+  
+  ![make down](CA2/screenshots/make_tf_down_15.png)

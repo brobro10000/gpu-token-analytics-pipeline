@@ -60,13 +60,7 @@ ensure-kubeconfig:
 
 # --- Common SSH command (adds some resilience) ---
 
-.PHONY: help print addrs env fix-key-perms \
-        verify verify-kafka verify-topics verify-mongo verify-mongo-expanded \
-        verify-processor verify-processor-expanded verify-producers verify-workflow \
-        ssh-kafka ssh-mongo ssh-processor ssh-producers ssh-control-plane ssh-worker1 ssh-worker2 \
-        bootstrap-k3s tunnel kubeconfig kubectl-test status clean-kubeconfig \
-        get-token join-worker-1 join-worker-2 join-workers smoke ensure-tf ensure-kubeconfig \
-        addrs env print help put-key
+.PHONY: help print addrs env fix-key-perms ssh-kafka ssh-mongo ssh-processor ssh-producers ssh-control-plane ssh-worker1 ssh-worker2 bootstrap-k3s tunnel kubeconfig kubectl-test status clean-kubeconfig get-token join-worker-1 join-worker-2 join-workers K verify verify-kafka verify-mongo verify-processor verify-producers verify-workflow verify-preflight verify-mongo-cap verify-deltas verify-processor-api verify-scale-hpa deploy undeploy namespaces smoke ensure-tf ensure-kubeconfig put-key
 
 help:
 	@echo "CA2: cluster and validation helpers"
@@ -142,16 +136,14 @@ put-key:
 # KUBECTL Wrapper (shortcut for arbitrary commands)
 # ------------------------------
 # Usage: make K ARGS="get pods -A -o wide"
-.PHONY: K
 K: ensure-kubeconfig
 	@KUBECONFIG=$(KUBECONFIGL) kubectl $(ARGS)
 
 # ------------------------------
 # VERIFY TARGETS
 # ------------------------------
-.PHONY: verify-all verify-kafka verify-mongo verify-processor verify-producers
 
-verify-all: verify-kafka verify-mongo verify-processor verify-producers
+verify: verify-kafka verify-mongo verify-processor verify-producers
 	@echo "✅ All verify checks executed."
 
 # --- Kafka ---
@@ -193,59 +185,129 @@ verify-producers:
 	@echo "🪵 [Producers] Recent logs"
 	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app logs -l app=producers --tail=40 || true
 
-# verify-workflow: End-to-end check with pre-clean if counts exceed a cap
-# Usage: make verify-workflow [MAX_DOCS=100]
-verify-workflow: fix-key-perms
-	@if [ -z "$(VM1_PUB)$(VM2_PUB)$(VM3_PUB)$(VM4_PUB)" ]; then echo "Missing VM public IPs; run 'make addrs' first."; exit 1; fi
 
-	@echo "=== 0) Preflight: Processor health and topics exist ==="
-	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/health && echo "Processor healthy ✅"'
-	@$(call SSH,$(VM1_HOST)) 'docker exec kafka kafka-topics.sh --bootstrap-server localhost:9092 --list | egrep -E "gpu\.metrics\.v1|token\.usage\.v1"'
+# --- Tunables ---
+NS_PLATFORM ?= platform
+NS_APP      ?= app
+DB_NAME     ?= ca2
+WAIT_SEC    ?= 5
+MAX_DOCS    ?= 1000
+TOPIC_REGEX ?= '^(gpu\.metrics\.v1|token\.usage\.v1)$$'
 
-	@echo "=== 0b) Enforce Mongo cap before run (default MAX_DOCS=100) ==="
-	@$(call SSH,$(VM2_HOST)) 'DB=ca2; MAX=$${MAX_DOCS:-100}; \
-	  GM=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpu_metrics.countDocuments()"); \
-	  TU=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").token_usage.countDocuments()"); \
-	  GP=$$(docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpus.countDocuments()"); \
-	  echo "Counts: gpu_metrics=$$GM token_usage=$$TU gpus=$$GP (cap=$$MAX)"; \
-	  if [ $$GM -gt $$MAX ] || [ $$TU -gt $$MAX ] || [ $$GP -gt $$MAX ]; then \
-	    echo "Cap exceeded → dropping collections gpu_metrics, token_usage, gpus"; \
-	    docker exec -i mongodb mongosh --quiet --eval "const d=db.getSiblingDB(\"$$DB\"); d.gpu_metrics.drop(); d.token_usage.drop(); d.gpus.drop(); print(\"dropped\")"; \
-	    sleep 2; \
-	  else \
-	    echo "Counts within cap → no reset"; \
-	  fi'
+# --- Helpers ---
+define FIRST_POD
+$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(1) get pod -l $(2) -o jsonpath='{.items[0].metadata.name}')
+endef
 
-	@echo "=== 1) Baseline Mongo counts (before) ==="
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca2\").gpu_metrics.countDocuments()" > /tmp/gpu_before.txt'
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca2\").token_usage.countDocuments()" > /tmp/tok_before.txt'
-	@$(call SSH,$(VM2_HOST)) 'echo "gpu_metrics(before)=$$(cat /tmp/gpu_before.txt)"; echo "token_usage(before)=$$(cat /tmp/tok_before.txt)"'
-
-	@echo "=== 2) Trigger producer one-shot ==="
-	@$(call SSH,$(VM4_HOST)) 'cd /opt/producers && docker compose up --no-build producer --abort-on-container-exit || true'
-	@$(call SSH,$(VM4_HOST)) 'CID=$$(docker compose -f /opt/producers/docker-compose.yml ps -q producer); \
-	  if [ -n "$$CID" ]; then \
-	    EC=$$(docker inspect --format="{{.State.ExitCode}}" $$CID 2>/dev/null || echo "N/A"); \
-	    echo "Producer ExitCode=$$EC"; docker logs --tail=60 $$CID || true; \
-	  else echo "Producer container not found"; fi'
-
-	@echo "=== 3) Give the processor a moment to consume & write ==="
-	@sleep 4
-
-	@echo "=== 4) Mongo counts (after) + delta assertions ==="
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca2\").gpu_metrics.countDocuments()" > /tmp/gpu_after.txt'
-	@$(call SSH,$(VM2_HOST)) 'docker exec -i mongodb mongosh --quiet --eval "db.getSiblingDB(\"ca2\").token_usage.countDocuments()" > /tmp/tok_after.txt'
-	@$(call SSH,$(VM2_HOST)) 'GPU_B=$$(cat /tmp/gpu_before.txt); GPU_A=$$(cat /tmp/gpu_after.txt); \
-	  TOK_B=$$(cat /tmp/tok_before.txt); TOK_A=$$(cat /tmp/tok_after.txt); \
-	  echo "gpu_metrics(after)=$$GPU_A (before=$$GPU_B)"; echo "token_usage(after)=$$TOK_A (before=$$TOK_B)"; \
-	  test $$(($$GPU_A-$$GPU_B)) -ge 1 && echo "gpu_metrics delta OK ✅" || { echo "gpu_metrics did not increase ❌"; exit 1; }; \
-	  test $$(($$TOK_A-$$TOK_B)) -ge 1 && echo "token_usage delta OK ✅" || { echo "token_usage did not increase ❌"; exit 1; }'
-
-	@echo "=== 5) Processor API spot-check ==="
-	@$(call SSH,$(VM3_HOST)) 'curl -sf http://localhost:8080/gpu/info | sed -e "s/.*/sample: &/;q" || true'
-
+verify-workflow: verify-preflight verify-mongo-cap verify-deltas verify-processor-api
 	@echo "=== ✅ Workflow verified end-to-end ==="
 
+# --- Preflight: readiness + topics ---
+verify-preflight:
+	@echo "=== Preflight: Kafka, Mongo, Processor ready ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) rollout status sts/kafka  --timeout=180s
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) rollout status sts/mongo  --timeout=180s
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_APP)      rollout status deploy/processor --timeout=120s
+	@echo "=== Kafka topics (auto-created after publish) ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=kafka) -- \
+	  kafka-topics --bootstrap-server kafka.$(NS_PLATFORM).svc.cluster.local:9092 --list 2>/dev/null | egrep -E $(TOPIC_REGEX) || \
+	  echo "(No topics yet—will be auto-created on first publish)"
+
+# --- Mongo cap enforcement (like CA1/CA0 flow) ---
+verify-mongo-cap:
+	@echo "=== Enforce Mongo cap (MAX_DOCS=$(MAX_DOCS)) ==="
+	@if [ "$(MAX_DOCS)" != "0" ]; then \
+	  KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=mongo) -- \
+	    bash -lc 'DB="$(DB_NAME)"; MAX=$(MAX_DOCS); \
+	    GM=$$(mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpu_metrics.countDocuments()"); \
+	    TU=$$(mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").token_usage.countDocuments()"); \
+	    GP=$$(mongosh --quiet --eval "db.getSiblingDB(\"$$DB\").gpus.countDocuments() || 0"); \
+	    echo "Counts: gpu_metrics=$$GM token_usage=$$TU gpus=$$GP (cap=$$MAX)"; \
+	    if [ $$GM -gt $$MAX ] || [ $$TU -gt $$MAX ] || [ $$GP -gt $$MAX ]; then \
+	      echo "Cap exceeded → dropping collections gpu_metrics, token_usage, gpus"; \
+	      mongosh --quiet --eval "const d=db.getSiblingDB(\"$$DB\"); d.gpu_metrics.drop(); d.token_usage.drop(); d.gpus.drop(); print(\"dropped\")"; \
+	      sleep 2; \
+	    else echo "Counts within cap → no reset"; fi'; \
+	fi
+
+# --- Baseline → nudge Producers → verify deltas ---
+verify-deltas:
+	@echo "=== 1) Baseline Mongo counts (before) ==="
+	@GPU_B=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=mongo) -- \
+	  mongosh --quiet --eval 'db.getSiblingDB("$(DB_NAME)").gpu_metrics.countDocuments()'); \
+	TOK_B=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=mongo) -- \
+	  mongosh --quiet --eval 'db.getSiblingDB("$(DB_NAME)").token_usage.countDocuments()'); \
+	echo "gpu_metrics(before)=$$GPU_B"; echo "token_usage(before)=$$TOK_B"; \
+	echo "=== 2) Restart Producers (nudge) ==="; \
+	KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_APP) rollout restart deploy/producers >/dev/null; \
+	KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_APP) rollout status deploy/producers --timeout=120s; \
+	echo "=== 3) Wait $(WAIT_SEC)s for Processor to consume ==="; sleep $(WAIT_SEC); \
+	echo "=== 4) Mongo counts (after) + assertions ==="; \
+	GPU_A=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=mongo) -- \
+	  mongosh --quiet --eval 'db.getSiblingDB("$(DB_NAME)").gpu_metrics.countDocuments()'); \
+	TOK_A=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $(call FIRST_POD,$(NS_PLATFORM),app=mongo) -- \
+	  mongosh --quiet --eval 'db.getSiblingDB("$(DB_NAME)").token_usage.countDocuments()'); \
+	echo "gpu_metrics(after)=$$GPU_A (before=$$GPU_B)"; echo "token_usage(after)=$$TOK_A (before=$$TOK_B)"; \
+	test $$(($$GPU_A-$$GPU_B)) -ge 1 && echo "gpu_metrics delta OK ✅" || { echo "gpu_metrics did not increase ❌"; exit 1; }; \
+	test $$(($$TOK_A-$$TOK_B)) -ge 1 && echo "token_usage delta OK ✅" || { echo "token_usage did not increase ❌"; exit 1; }
+
+# --- Processor API spot-check ---
+verify-processor-api:
+	@echo "=== Processor API spot-check ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_APP) port-forward deploy/processor 8080:8080 >/dev/null 2>&1 & PF=$$!; \
+	sleep 1; \
+	curl -sf http://localhost:8080/health >/dev/null && echo "health: OK"; \
+	( curl -sf http://localhost:8080/gpu/info | sed -e "s/.*/sample: &/;q" ) || true; \
+	kill $$PF >/dev/null 2>&1 || true
+
+# ===== HPA autoscale validation (requires metrics-server) =====
+HPA_NAME ?= producers
+BURST_RATE ?= 500     # temporary high load to trigger CPU > target
+COOLDOWN_SEC ?= 60     # time to let HPA cool down after removing the override
+HPA_TIMEOUT_SEC ?= 300 # total time budget to observe scale events
+
+verify-scale-hpa:
+	@echo "=== Check HPA and metrics availability ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app get hpa $(HPA_NAME) || { echo "No HPA $(HPA_NAME) ❌"; exit 1; }
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n kube-system get deploy metrics-server >/dev/null 2>&1 && \
+	  echo "metrics-server present ✅" || echo "ℹ metrics-server not found; autoscale may not react"
+
+	@echo "=== Snapshot current replicas & desired ==="
+	@CUR=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get deploy/producers -o jsonpath='{.status.replicas}'); \
+	DES=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get hpa $(HPA_NAME) -o jsonpath='{.status.desiredReplicas}'); \
+	echo "current=$$CUR desired=$$DES"
+
+	@echo "=== Trigger load: temporarily override RATE=$(BURST_RATE) ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app set env deploy/producers RATE=$(BURST_RATE) --containers=producers --overwrite
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app rollout status deploy/producers --timeout=120s
+
+	@echo "=== Wait for HPA to scale UP (timeout $(HPA_TIMEOUT_SEC)s) ==="
+	@START=$$(date +%s); \
+	while true; do \
+	  CUR=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get deploy/producers -o jsonpath='{.status.replicas}'); \
+	  DES=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get hpa $(HPA_NAME) -o jsonpath='{.status.desiredReplicas}'); \
+	  echo "now: replicas=$$CUR desired=$$DES"; \
+	  if [ "$$DES" != "" ] && [ "$$DES" -ge 2 ]; then echo "Scaled up (desired=$$DES) ✅"; break; fi; \
+	  NOW=$$(date +%s); ELAPSED=$$((NOW-START)); \
+	  [ "$$ELAPSED" -gt "$(HPA_TIMEOUT_SEC)" ] && { echo "Timed out waiting for scale up ❌"; exit 1; } || sleep 10; \
+	done
+
+	@echo "=== Remove override (restore ConfigMap value): RATE- ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app set env deploy/producers RATE- --containers=producers
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app rollout status deploy/producers --timeout=120s
+	@echo "Cooling down $(COOLDOWN_SEC)s to let metrics drop..."
+	@sleep $(COOLDOWN_SEC)
+
+	@echo "=== Wait for HPA to scale DOWN (timeout $(HPA_TIMEOUT_SEC)s) ==="
+	@START=$$(date +%s); \
+	while true; do \
+	  CUR=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get deploy/producers -o jsonpath='{.status.replicas}'); \
+	  DES=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get hpa $(HPA_NAME) -o jsonpath='{.status.desiredReplicas}'); \
+	  echo "now: replicas=$$CUR desired=$$DES"; \
+	  if [ "$$DES" != "" ] && [ "$$DES" -le 1 ]; then echo "Scaled down (desired=$$DES) ✅"; break; fi; \
+	  NOW=$$(date +%s); ELAPSED=$$((NOW-START)); \
+	  [ "$$ELAPSED" -gt "$(HPA_TIMEOUT_SEC)" ] && { echo "Timed out waiting for scale down ❌"; exit 1; } || sleep 10; \
+	done
 
 ssh-kafka: ensure-tf    ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM1_PUB)
 ssh-mongo: ensure-tf    ; @ssh $(SSH_OPTS) $(SSH_USER)@$(VM2_PUB)
@@ -372,7 +434,6 @@ tunnel:
 	@ssh -i $(SSH_KEY) -N -L 6443:127.0.0.1:6443 $(SSH_USER)@$(CP_PUB)
 
 
-.PHONY: deploy undeploy namespaces
 
 namespaces: ensure-kubeconfig
 	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) create ns platform --dry-run=client -o yaml | \
