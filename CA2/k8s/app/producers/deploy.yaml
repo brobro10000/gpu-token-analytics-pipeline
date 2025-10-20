@@ -5,19 +5,26 @@ metadata:
   namespace: app
 spec:
   replicas: 1
-  selector:
-    matchLabels: { app: producers }
+  selector: { matchLabels: { app: producers } }
   template:
-    metadata:
-      labels: { app: producers }
+    metadata: { labels: { app: producers } }
     spec:
+      terminationGracePeriodSeconds: 10
       containers:
         - name: producers
           image: ghcr.io/brobro10000/producers:ca2
           imagePullPolicy: Always
+          workingDir: /app           # <— directory containing producer.py
+          command: ["/bin/sh","-lc"]
+          args:
+            - |
+              set -e
+              while true; do
+                python -u producer.py || true
+                sleep "${SLEEP_SEC:-1}"
+              done
           envFrom:
             - configMapRef: { name: producers-config }
           resources:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "500m", memory: "256Mi" }
-      terminationGracePeriodSeconds: 10

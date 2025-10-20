@@ -22,6 +22,14 @@ spec:
             - { name: controller, containerPort: 9093 }
             - { name: internal,   containerPort: 29092 }
           env:
+            - name: KAFKA_CFG_LISTENERS
+              value: PLAINTEXT://:9092
+            - name: KAFKA_CFG_ADVERTISED_LISTENERS
+              value: PLAINTEXT://kafka.platform.svc.cluster.local:9092
+            - name: KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP
+              value: PLAINTEXT:PLAINTEXT
+            - name: KAFKA_CFG_INTER_BROKER_LISTENER_NAME
+              value: PLAINTEXT
             # REQUIRED by Confluent entrypoint, even if already formatted
             - { name: CLUSTER_ID, value: "MkU3OEVBNTcwNTJENDM2Qk" }  # any 22-char ID is fine
             # Single-node KRaft
