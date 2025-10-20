@@ -4,7 +4,7 @@ metadata:
   name: producers-config
   namespace: app
 data:
-  RATE: "200"              # msgs/sec (example)
+  RATE: "200"
   BATCH: "20"
   SLEEP_SEC: "0.1"
   TOPIC_METRIC: "gpu.metrics.v1"
