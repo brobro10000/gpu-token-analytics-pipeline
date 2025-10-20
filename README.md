@@ -500,6 +500,15 @@ Notes:
   - NodePorts (30000–32767) within the VPC (tunable in security_groups module)
 
 ### 3) Kubeconfig and Cluster Access
+
+Before using kubectl, you must have a local CA2/.kube directory with a kubeconfig.yaml inside it. If it doesn't exist yet, create it:
+
+```bash
+cd CA2
+mkdir -p .kube
+# This file is written by 'make kubeconfig' or 'make bootstrap-k3s'
+# touch .kube/kubeconfig.yaml    # optional placeholder
+```
 K3s is installed on the control plane via cloud-init. Copy the kubeconfig locally with the CA2 root Makefile:
 
 ```bash
