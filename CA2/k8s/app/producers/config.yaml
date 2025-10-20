@@ -4,9 +4,9 @@ metadata:
   name: producers-config
   namespace: app
 data:
-  RATE: "200"
-  BATCH: "20"
-  SLEEP_SEC: "0.1"
+  RATE: "1000"
+  BATCH: "100"
+  SLEEP_SEC: "0"
   TOPIC_METRIC: "gpu.metrics.v1"
   TOPIC_TOKEN:  "token.usage.v1"
   KAFKA_BOOTSTRAP: "kafka.platform.svc.cluster.local:9092"

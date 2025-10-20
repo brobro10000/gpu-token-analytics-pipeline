@@ -13,6 +13,3 @@ metadata:
   name: processor-secrets
   namespace: app
 type: Opaque
-stringData:
-  # add secrets here if you have any (passwords, tokens)
-  DUMMY: "x"

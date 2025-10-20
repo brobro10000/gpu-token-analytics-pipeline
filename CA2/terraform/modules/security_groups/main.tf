@@ -78,6 +78,16 @@ resource "aws_vpc_security_group_ingress_rule" "k8s_kubelet" {
   to_port           = 10250
 }
 
+resource "aws_security_group_rule" "kubelet_self" {
+  type                     = "ingress"
+  from_port                = 10250
+  to_port                  = 10250
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.k8s_nodes.id
+  source_security_group_id = aws_security_group.k8s_nodes.id
+  description              = "Allow kubelet scrape within node SG"
+}
+
 # Optional NodePorts (cluster-internal)
 resource "aws_vpc_security_group_ingress_rule" "k8s_nodeports" {
   count             = var.enable_nodeports ? 1 : 0
