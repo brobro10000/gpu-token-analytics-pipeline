@@ -15,7 +15,7 @@ jobs:
       packages: write
     env:
       IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/producer
-      CONTEXT: ./CA0/vm4-producer
+      CONTEXT: ./CA0/vm4-producers
       TAG: ca2
     steps:
       - uses: actions/checkout@v4
