@@ -4,7 +4,9 @@
 
 CA2 extends the GPU analytics pipeline onto a self-managed **Kubernetes (K3s)** cluster orchestrated with **Terraform** and **Makefile automation**.
 
-This setup provisions a full working cluster (control plane + workers) on AWS EC2 instances, bootstraps K3s automatically, and deploys all platform services (Kafka, MongoDB) and application workloads (Processor, Producers).
+This setup provisions a full working cluster (control plane + workers) on AWS EC2 instances, bootstraps K3s automatically via cloud-init, and deploys all platform services (Kafka, MongoDB) and application workloads (Processor, Producers).
+
+Also see the CA2 section in the repository root README for a cohesive overview and quickstart: ../README.md
 
 ---
 
@@ -32,38 +34,37 @@ This setup provisions a full working cluster (control plane + workers) on AWS EC
 
 ## 🏗️ Replication Steps
 
-### 1️⃣ Create the Cluster via Terraform
+### 1️⃣ Provision infrastructure (Terraform Makefile)
 
 ```bash
 cd CA2/terraform
-terraform init
-terraform apply
+make deploy        # init + plan (auto-detects my_ip_cidr) + apply
+make outputs       # show VPC/SG/instance outputs
 ```
 
-This will:
+Notes:
 
-* Create EC2 control-plane and worker nodes
-* Open ports for SSH and K3s API
-* Output the control-plane public IP
+- Override AWS profile/region as needed: `AWS_PROFILE=terraform AWS_REGION=us-east-1 make deploy`
+- Provide an explicit EC2 keypair name if not set in tfvars: `SSH_KEY_NAME=my-key make deploy`
+- Security groups allow:
+  - 22/tcp from my_ip_cidr (admin)
+  - 6443/tcp (kube-apiserver) from my_ip_cidr
+  - NodePorts (30000–32767) within the VPC (tunable)
 
 ---
 
-### 2️⃣ Bootstrap K3s
+### 2️⃣ Fetch kubeconfig (cluster auto-bootstrapped)
+
+K3s is installed on the control-plane via cloud-init. Pull the kubeconfig locally and verify access:
 
 ```bash
-# from /CA2
-make bootstrap-k3s
-```
-
-This installs K3s on the control plane, generates and uploads the kubeconfig, and prepares the worker join token.
-
-Validate:
-
-```bash
+cd CA2
 make tunnel
-
+make bootstrap-k3s
 make status
 ```
+
+If your kubeconfig uses 127.0.0.1:6443, use a temporary tunnel (see next step) while running kubectl.
 
 ---
 
@@ -106,13 +107,14 @@ This applies everything under `CA2/k8s/` including:
 make status
 ```
 
-### 🧩 Verify all components
+### 🧩 Verify components
 
 ```bash
-make verify-all
+make verify            # runs verify-kafka, verify-mongo, verify-processor, verify-producers
+make verify-workflow   # optional end-to-end baseline→nudge→delta checks
 ```
 
-or individually:
+Or individually:
 
 ```bash
 make verify-kafka
@@ -180,21 +182,42 @@ make K ARGS="-n platform get svc -o wide"
 
 ```
 CA2/
-├── main.tf                   # Terraform entrypoint
-├── modules/
-│   ├── network/              # VPC, subnets, SGs
-│   ├── cluster/              # EC2 + K3s setup
-├── Makefile                  # SSH + deploy automation
+├── README.md
+├── docs/
+│   ├── architecture.md
+│   └── conversation-summary.md
+├── diagrams/
+├── screenshots/
+├── Makefile                  # SSH + deploy automation + kubeconfig + verify
 ├── k8s/
-│   ├── app/
-│   │   ├── processor.yaml
-│   │   ├── producers.yaml
 │   ├── platform/
-│   │   ├── kafka.yaml
-│   │   ├── mongo.yaml
-│   ├── namespaces.yaml
-└── .kube/
-    ├── kubeconfig.yaml
+│   │   ├── kafka/
+│   │   │   ├── statefulset.yaml
+│   │   │   └── svc.yaml
+│   │   └── mongo/
+│   │       ├── statefulset.yaml
+│   │       └── svc.yaml
+│   └── app/
+│       ├── processor/
+│       │   └── deploy.yaml
+│       └── producers/
+│           ├── deploy.yaml
+│           ├── hpa.yaml
+│           └── config.yaml
+└── terraform/
+    ├── Makefile
+    ├── providers.tf
+    ├── main.tf
+    ├── variables.tf
+    ├── outputs.tf
+    └── modules/
+        ├── vpc/
+        ├── security_groups/
+        ├── network/
+        ├── cluster/
+        │   └── templates/
+        └── instances/
+            └── templates/
 ```
 
 ---
@@ -203,14 +226,14 @@ CA2/
 
 | Category                          | Deliverable                                             | Validation                                        |
 | --------------------------------- | ------------------------------------------------------- | ------------------------------------------------- |
-| **1. Infrastructure (Terraform)** | AWS EC2 cluster provisioned with public control plane   | `terraform apply` + output shows control plane IP |
-| **2. Cluster Setup (K3s)**        | K3s installed + kubeconfig exported                     | `make bootstrap` + `make status` shows `Ready`    |
+| **1. Infrastructure (Terraform)** | AWS EC2 cluster provisioned with public control plane   | `make deploy` + outputs show control plane IP     |
+| **2. Cluster Setup (K3s)**        | K3s installed via cloud-init; kubeconfig pulled locally | `make kubeconfig` + `make status` shows `Ready`   |
 | **3. Namespaces**                 | `app`, `platform` created                               | `kubectl get ns`                                  |
 | **4. Platform Layer**             | Kafka + Mongo deployed via StatefulSets                 | `make verify-kafka`, `make verify-mongo`          |
 | **5. App Layer**                  | Processor + Producers deployed via Deployments          | `make verify-processor`, `make verify-producers`  |
 | **6. Connectivity**               | Processor connects to Kafka + Mongo                     | `kubectl logs -n app -l app=processor`            |
 | **7. Observability**              | Pods all `Running` + `1/1 Ready`                        | `make status`                                     |
-| **8. Automation**                 | Makefile executes full workflow end-to-end              | `make deploy`, `make verify-all`                  |
+| **8. Automation**                 | Makefile executes full workflow end-to-end              | `make deploy`, `make verify`, `make verify-workflow` |
 | **9. Debug**                      | Demonstrate tunnel-based kubeconfig or public-IP access | `make tunnel` + `make status`                     |
 | **10. Documentation**             | Clear README with setup + results                       | ✅ This file                                       |
 
@@ -218,5 +241,5 @@ CA2/
 
 ## 📎 Related Docs
 
-* [architecture.md](./architecture.md) — Updated CA2 cluster and namespace diagram
-* [conversation-summary.md](./conversation-summary.md) — Terraform + Makefile evolution
+* [architecture.md](./docs/architecture.md) — Updated CA2 cluster and namespace diagram
+* [conversation-summary.md](./docs/conversation-summary.md) — Terraform + Makefile evolution
