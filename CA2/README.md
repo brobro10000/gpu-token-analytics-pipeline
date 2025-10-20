@@ -243,3 +243,68 @@ CA2/
 
 * [architecture.md](./docs/architecture.md) — Updated CA2 cluster and namespace diagram
 * [conversation-summary.md](./docs/conversation-summary.md) — Terraform + Makefile evolution
+
+
+---
+
+## 📸 Screenshots (by command order)
+
+- Terraform deploy (part 1)
+  
+  ![make tf deploy 1](screenshots/make_tf_deploy_1.png)
+
+- Terraform deploy (part 2)
+  
+  ![make tf deploy 2](screenshots/make_tf_deploy_2.png)
+
+- Open tunnel to API server
+  
+  ![make tunnel](screenshots/make_tunnel_3.png)
+
+- Bootstrap K3s and export kubeconfig
+  
+  ![make bootstrap-k3s](screenshots/make_bootstrap-k3s_4.png)
+
+- Cluster status (nodes/pods)
+  
+  ![make status 1](screenshots/make_status_5.png)
+
+- Apply Kubernetes manifests
+  
+  ![make deploy (k8s)](screenshots/make_kube_deploy_6.png)
+
+- Cluster status after deploy
+  
+  ![make status 2](screenshots/make_status_7.png)
+
+- Verify Kafka
+  
+  ![make verify-kafka](screenshots/make_verify-kafka_8.png)
+
+- Verify MongoDB
+  
+  ![make verify-mongo](screenshots/make_verify-mongo_9.png)
+
+- Verify Producers
+  
+  ![make verify-producers](screenshots/make_verify-producers_10.png)
+
+- Verify Processor
+  
+  ![make verify-processor](screenshots/make_verify-processor_11.png)
+
+- Verify end-to-end workflow
+  
+  ![make verify-workflow](screenshots/make_verify-workflow_12.png)
+
+- Verify HPA scale (optional)
+  
+  ![make verify-scale-hpa](screenshots/make_verify-scale-hpa_13.png)
+
+- Undeploy Kubernetes manifests
+  
+  ![make undeploy (k8s)](screenshots/make_kube_undeploy_14.png)
+
+- Terraform destroy
+  
+  ![make down](screenshots/make_tf_down_15.png)
