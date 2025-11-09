@@ -1,151 +1,139 @@
-# Architecture Tradeoffs — CA3 (Terraform + K3s on AWS)
+# Architecture Tradeoffs — CA3 (K3s + Kafka + Mongo + Observability + Autoscaling)
+
+:contentReference[oaicite:1]{index=1}
 
 ## Executive Summary
 
-| Choice                                   | Why We Chose It                                          | Pros                                                                          | Cons / Risks                                                               | Near-Term Scale Path                                                                  |
-| ---------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| **Self-managed K3s on EC2 (Terraform)**  | Full control, lower cost, rapid bootstrap                | Reproducible IaC; minimal control-plane overhead; excellent learning fidelity | Operational burden (patches, CA, metrics, upgrades); no cluster autoscaler | Add workers; integrate Prometheus + HPA; migrate to **EKS** for managed control plane |
-| **Public IP kubeconfig (CA embedded)**   | Fixes TLS verification; no SSH tunnel dependency         | Works locally with `kubectl` directly; reproducible                           | Still exposes API via SG allowlist; must maintain SANs                     | Replace with Bastion/VPN or `aws_lb` ingress proxy                                    |
-| **Static YAML metrics-server**           | Independence from K3s default; reproducible via Makefile | Deterministic setup; explicit RBAC; debuggable                                | Manual version management; must tune flags per environment                 | Move to Helm chart in Terraform with version pinning                                  |
-| **Single-replica Kafka & Mongo**         | MVP speed and cost efficiency                            | Lightweight footprint; fewer moving parts                                     | No HA or durability; single point of failure                               | Add PVCs + multi-replica (3× Kafka KRaft, 3× MongoRS)                                 |
-| **Ephemeral storage (`emptyDir`)**       | Fast iteration; no StorageClass needed                   | Zero configuration; instant cleanup                                           | Data loss on node reschedule; non-persistent                               | Introduce **EBS StorageClass** + `volumeClaimTemplates`                               |
-| **Continuous Producers (looped Python)** | Required for sustained HPA metrics                       | Keeps pod active; visible CPU utilization                                     | Manual wrapping of script; may busy-loop                                   | Replace with native daemon mode or sidecar driver                                     |
-| **Makefile automation**                  | Unified developer UX across bootstrap + verify           | One-command reproducibility; clear separation of concerns                     | Local coupling; hidden assumptions                                         | Add CI wrappers (`make verify-all` in GitHub Actions)                                 |
+| Choice | Why We Chose It | Pros | Cons / Risks | Future Scale Path |
+|-------|----------------|------|--------------|------------------|
+| **Self-managed K3s on EC2 (Terraform)** | Maintain continuity with CA2 while extending into Observability & HPA | Low control-plane overhead, fast provisioning, strong learning value | Operational overhead (patching, recovery, CA rotation), no cluster autoscaler | Migrate to **EKS** to reduce operational toil and improve node lifecycle management |
+| **Kafka + MongoDB as StatefulSets** | Match CA2’s data pipeline but containerized under Kubernetes | Uniform deployment model; observable; testable under failure | Single-node Kafka & Mongo → **no durability**; restart events drop state | StatefulSets + PVs → multi-broker Kafka (3×) & Mongo ReplicaSet (3×) |
+| **starlette_exporter for Processor metrics** | Lightweight, Python-native Prometheus endpoint | Easy to integrate; good visibility into app throughput & error rate | Limited defaults → custom metrics must be defined manually | Introduce structured metrics (histograms, percentiles), Kafka Lag Exporter |
+| **kube-prometheus-stack + Loki/Promtail** | Single Helm stack delivers metrics, dashboards, alerts, logs | One consistent monitoring system, Grafana dashboards, logs-in-context | Resource overhead; CRDs add complexity; can “hide” failure behind dashboards | Move storage to S3/Thanos for long-term metrics retention |
+| **HPA Autoscaling (CPU-based)** | Demonstrate dynamic scaling in response to load | Clear visibility of scaling behavior and node resource usage | CPU ≠ business throughput; can scale incorrectly under I/O-bound loads | Introduce scaling on **Kafka Lag** or **custom Processor queue metrics** |
+| **Single VPC, no ingress, cluster private** | Keep blast radius small and avoid public attack surface | Safe default, minimal SG exposure | No external UI access without port-forward | Introduce Traefik ingress + cert-manager for TLS |
 
 ---
 
 ## Goals & Assumptions
 
-* Showcase **IaC, cluster bootstrap, and app deployment** end-to-end.
-* Maintain **low cloud cost** (no managed control plane or HA services).
-* Optimize for **debuggability, transparency, and learning value**, not production hardening.
+* Extend CA2 pipeline into **observability, scaling, and logging**, not just raw deployment.
+* Preserve **low cloud costs** by **not** introducing managed services yet.
+* Optimize for **debuggability, transparency, and self-awareness** of the system’s data flow.
+* Durability and HA are *intentionally not primary goals* in CA3 (will be addressed in CA4/EKS transition).
 
 ---
 
 ## Benefits
 
-### 1️⃣ Reproducibility & Control
+### 1️⃣ End-to-End Operational Observability
+We now have:
+- Metrics at node, pod, and application level
+- Request latency and failure visibility from Processor
+- Token & GPU metrics flowing through pipeline into persistent storage
+- Log context correlation in Grafana via Loki
 
-* Terraform defines network + instance topology and outputs dynamic IPs for the Makefile.
-* K3s provides a lightweight binary for quick re-deployments.
-* Makefile standardizes every phase: `bootstrap`, `deploy`, `verify-*`, `status`.
+This enables **root cause analysis** without SSH or guesswork.
 
-### 2️⃣ Cost Efficiency
+### 2️⃣ Reproducible, Declarative, Single-Command Deployments
+Everything from:
+- Bootstrap → Monitoring → App Stack → Validation  
+is automated via **Makefile + Terraform output introspection**.
 
-* EC2 instances only; no EKS or managed service charges.
-* Default `t3.small`/`t3.medium` SKUs are sufficient for workloads and autoscale tests.
-
-### 3️⃣ Observability & Debuggability
-
-* Metrics-server deployed manually with explicit RBAC enables controlled metrics flow.
-* Make targets (`verify-*`) expose pipeline health through Mongo deltas and logs.
+### 3️⃣ Demonstrates Real Cluster Behavior Under Load
+The autoscaling test (`make verify-scale-hpa`) makes CA3 an actual **performance experiment**, not just a static deployment.
 
 ---
 
 ## Updated Tradeoffs & Risks
 
-### A) Reliability / HA
+### Reliability / HA
 
-| Risk                          | Context                 | Mitigation                                        |
-| ----------------------------- | ----------------------- | ------------------------------------------------- |
-| **Single Kafka / Mongo node** | No quorum or redundancy | Add PVCs and multi-replica StatefulSets (3× each) |
-| **`emptyDir` persistence**    | Data lost on restart    | Use EBS PVCs with retention policies              |
-| **No Cluster Autoscaler**     | Worker capacity fixed   | Add node group management or migrate to EKS       |
-
----
-
-### B) Operations / Day-2 Lifecycle
-
-| Issue                                   | Impact                    | Mitigation                                         |
-| --------------------------------------- | ------------------------- | -------------------------------------------------- |
-| Manual patching of K3s & metrics-server | CVE exposure              | Integrate Helm-based upgrade pipeline              |
-| TLS & SAN friction                      | Causes x509 errors        | Automate kubeconfig generation with CA embedding   |
-| No auto-backup                          | Data loss on node failure | Schedule `kubectl cp` + `mongodump` jobs or Velero |
+| Risk | Why It Exists | Impact | Mitigation Path |
+|------|--------------|--------|----------------|
+| Single-replica Kafka & Mongo | Chosen for simplicity & cost | Broker/DB loss takes pipeline down | Multi-node STS + PVCs + anti-affinity |
+| Ephemeral data (emptyDir) | Fast iteration environment | Data loss on node reschedule | Introduce EBS-backed StorageClass |
+| No cluster autoscaler | K3s self-managed control-plane | Scaling stops at node limits | On migration to EKS: enable CA + Karpenter |
 
 ---
 
-### C) Security
+### Operations & Day-2 Concerns
 
-| Concern                      | Reason                             | Mitigation                                                  |
-| ---------------------------- |------------------------------------| ----------------------------------------------------------- |
-| Kafka and Mongo in plaintext | Simplicity for CA3 MVP             | Add TLS or place behind a service mesh (Linkerd/Istio)      |
-| Secrets in plaintext         | No external secret integration yet | Use **External Secrets Operator** + AWS SSM/Secrets Manager |
-| Open SG ports                | Public control plane               | Restrict ingress to known IPs or private subnets            |
+| Issue | Cause | Impact | Future Improvement |
+|------|-------|--------|-------------------|
+| Helm chart upgrades require care | CRDs change frequently | Silent monitoring failures if versions drift | Pin versions, test CRD diff before upgrade |
+| Loki logs retention is local | No object storage backend | Limited log history | Add S3 + retention policies |
+| Kafka/Zookeeper logging noisy | Stateful workloads log aggressively | Harder to parse logs manually | Use log labels & Grafana log queries |
 
 ---
 
-### D) Developer Ergonomics
+### Security
 
-| Issue                               | Description               | Fix                                                     |
-| ----------------------------------- | ------------------------- | ------------------------------------------------------- |
-| Curl missing in base images         | Healthcheck scripts fail  | Use `wget` or ephemeral curl pod (`curlimages/curl`)    |
-| One-shot producers exit             | HPA sees no load          | Loop Python producer for continuous metrics             |
-| Kafka advertised listeners mismatch | Connection refused errors | Set `PLAINTEXT://kafka.platform.svc.cluster.local:9092` |
-| Reprovision friction                | Manual cleanups           | Add `make destroy-all` for Terraform + K3s teardown     |
+| Concern | Reason | Mitigation |
+|--------|--------|------------|
+| Kafka/Mongo run in plaintext | Simplicity over transport security | Introduce TLS sidecars or Linkerd mTLS |
+| Secrets stored in K8s directly | Default K8s secret storage is base64 only | Use **External Secrets Operator + AWS SSM/Secrets Manager** |
+| Control plane reachable via SG allowlist | Convenience for kubectl access | Replace with WireGuard/Bastion/SSM session |
 
 ---
 
 ## Scalability Considerations
 
-### Cluster
+### Application Scaling
+- **Producers** scale reliably under CPU-driven HPA.
+- **Processor** can be scaled when consumer throughput drops or queue lag appears.
+- **Better scaling signal** is **Kafka Consumer Lag**, not CPU.
 
-* **Vertical:** Scale instance size (vCPU/mem).
-* **Horizontal:** Add EC2 workers; re-register with control plane.
-* **Future:** Migrate to **EKS** for managed API server, Cluster Autoscaler, and IAM roles for service accounts (IRSA).
+### Data Scaling
+- Kafka → move from 1 broker → 3 broker KRaft mode.
+- Mongo → migrate to **ReplicaSet** with PVs.
 
-### Data Plane
-
-* **Kafka:** Move to 3-node KRaft with persistent storage and rack awareness.
-* **Mongo:** ReplicaSet + PVs; auth enabled; automated backup pipeline.
-
-### Application Layer
-
-* **Producers:** Scale via HPA using CPU utilization (validated post-metrics fix).
-* **Processor:** Add concurrency pool; integrate readiness/liveness probes.
-* **Verification:** Parameterize Makefile for burst load and expected Mongo deltas.
+### Metrics Scaling
+- Prometheus → may require **Thanos** sidecar for long-term retention and query federation.
 
 ---
 
-## Alternatives & Evaluation
+## Alternative Approaches (With Tradeoffs)
 
-| Option                    | Pros                                                   | Cons                                    | Ideal Use                                 |
-| ------------------------- | ------------------------------------------------------ | --------------------------------------- | ----------------------------------------- |
-| **EKS**                   | Managed HA control plane; autoscaling; IAM integration | Higher cost; extra Terraform complexity | When cluster stability > cost priority    |
-| **Managed Kafka / Atlas** | Offloads ops; HA & SLA                                 | Vendor lock-in; monthly fees            | When persistence and uptime are essential |
-| **Pure VM (CA1 style)**   | Simple mental model                                    | No orchestration; manual scaling        | Micro PoCs or early labs                  |
-
----
-
-## Cost Outlook
-
-| Phase              | Expected Cost           | Notes                                        |
-| ------------------ | ----------------------- | -------------------------------------------- |
-| **CA2**            | ≈ $10–15/day (EC2 only) | 2–3 EC2 nodes, small instance types          |
-| **CA3+**           | ≈ $70–100/mo + storage  | Adds EKS control plane, managed Kafka/Mongo  |
-| **Managed Future** | Variable                | Higher reliability and security offset costs |
+| Alternative | Strengths | Drawbacks | Appropriate When |
+|------------|-----------|-----------|-----------------|
+| **EKS + MSK + Atlas** | Fully managed data plane & control plane | $$$ and less hands-on operations | Production or long-running lab |
+| **Docker Compose / Bare VMs** | Lower cognitive complexity | No autoscaling, no scheduling | Early development teaching |
+| **Nomad instead of K8s** | Simpler orchestrator | Less ecosystem support | Highly homogenous workloads |
 
 ---
 
-## Hardening Roadmap
+## Cost Outlook (Approx.)
 
-1. **Storage Durability:** Introduce EBS StorageClass + PVCs (Kafka/Mongo).
-2. **HA Topology:** Expand to 3× brokers + 3× replica sets; add PDBs.
-3. **Security:** TLS/mTLS across data plane; NetworkPolicies; Secrets Manager.
-4. **Observability:** Deploy Prometheus + Grafana + Loki via Helm.
-5. **CI/CD Integration:** Automated `verify-all` Make target in GitHub Actions.
-6. **Platform Evolution:** Evaluate EKS migration and managed data backends.
+| Item | Rate | Notes |
+|------|------|------|
+| EC2 t3.small × 2–3 nodes | Lowest cost | Tight resource envelope for Prometheus |
+| CPU load tests (burst scaling) | Temporary spend increase | Use `make verify-scale-hpa` sparingly |
+| Monitoring stack retention | Affects disk + storage | Move to S3 if logs/metrics retained long-term |
+
+---
+
+## Hardening Roadmap (CA4+)
+
+1. **Migrate to EKS** for autoscaler + managed control plane.
+2. **Enable multi-broker Kafka** + persistent storage.
+3. **Enable Mongo ReplicaSet** for read scalability + reliability.
+4. **Implement mTLS** (Linkerd minimal mesh).
+5. **Scale dashboards** with custom latency & throughput SLO panels.
 
 ---
 
 ## Bottom Line
 
-The CA3 design balances **educational transparency**, **cost efficiency**, and **operational realism**.
-It now includes:
+CA3 intentionally favors:
+**Learning value + Observability clarity + Real scaling behavior**
+over
+**Durability + HA + Production readiness**.
 
-* A **deterministic bootstrap** process (Terraform + Makefile)
-* **Manual metrics-server deployment** with working metrics and HPA readiness
-* **Continuous producers** for steady workloads
-* **Kafka connectivity fixes** and **Mongo verification**
-* Secure, debuggable configuration flows (public IP + CA-embedded kubeconfig)
+It successfully demonstrates:
+- Streaming data pipeline
+- Distributed processing and storage
+- System introspection through metrics + logs
+- Autoscaling in response to load
 
-While intentionally **non-HA** and **manually operated**, it defines a clear upgrade path toward production-grade Kubernetes on **EKS** with persistent storage, secrets management, and scalable observability.
+while keeping a clear and achievable path toward **production-grade** evolution in CA4.

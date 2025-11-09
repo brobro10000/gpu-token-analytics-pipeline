@@ -1,342 +1,189 @@
-# 🧩 CA3 — Orchestrated GPU Analytics Pipeline (Terraform + K3s)
+# 🧩 CA3 — Cloud-Native GPU Analytics Pipeline with Observability & Autoscaling
+
+:contentReference[oaicite:1]{index=1}
 
 ## 📘 Summary
 
-CA3 extends the GPU analytics pipeline onto a self-managed **Kubernetes (K3s)** cluster orchestrated with **Terraform** and **Makefile automation**.
+CA3 extends the CA2 GPU analytics pipeline by adding a **full observability stack**, **autoscaling**, and **log aggregation** on top of the existing **K3s** + **Kafka** + **Mongo** foundation.
 
-This setup provisions a full working cluster (control plane + workers) on AWS EC2 instances, bootstraps K3s automatically via cloud-init, and deploys all platform services (Kafka, MongoDB) and application workloads (Processor, Producers).
-
-Also see the CA3 section in the repository root README for a cohesive overview and quickstart: ../README.md
+New in CA3:
+- **kube-prometheus-stack** (Prometheus Operator, Alertmanager, Grafana)
+- **Loki + Promtail** for log aggregation
+- **Autoscaling via HPA** (CPU-driven for Producers, optional for Processor)
+- **Metrics exposed via starlette_exporter (/metrics)** for Processor
+- Unified **Grafana dashboard** for pipeline throughput + system health
 
 ---
 
 ## 🧠 High-Level Architecture
 
 * **Terraform** provisions:
+  * AWS VPC, Security Groups, EC2 control-plane + workers
+  * Outputs used to retrieve kubeconfig + join nodes
 
-    * VPC, subnets, and EC2 instances
-    * Security groups for admin SSH + K3s communication
-    * Control-plane public IP
-* **Makefile** automates:
+* **K3s** hosts three namespaces:
+  * `platform` → **Kafka**, **Mongo**
+  * `app` → **Processor**, **Producers** (+ HPA)
+  * `monitoring` → **Prometheus Operator**, **Grafana**, **Loki**, **Promtail**
 
-    * SSH access, tunnel creation, and K3s bootstrapping
-    * Cluster introspection (`make status`, `make logs`)
-    * Kubernetes manifest deployment (`make deploy`)
-    * Service-level verification (`make verify-*`)
-* **K3s** hosts:
+* **Data Flow**
+```
 
-    * `platform` namespace → Kafka, MongoDB
-    * `app` namespace → Processor, Producers
-* **Processor** consumes GPU metrics from Kafka → stores in MongoDB
-* **Producers** generate data and publish to Kafka topics
+Producers → Kafka → Processor → MongoDB
 
+```
+
+* **Observability**
+```
+
+Processor /metrics → Prometheus → Grafana Dashboards
+Pod Logs → Promtail → Loki → Grafana Log Panels
+
+````
+
+---
 
 ## 📦 Container Registry Table
 
-| **Component**                   | **Registry / Image**                            | **Tag**              | **Purpose**                                                                                   |
-| ------------------------------- | ----------------------------------------------- |----------------------| --------------------------------------------------------------------------------------------- |
-| **Producers**                   | `ghcr.io/brobro10000/producers`                 | `ca3`                | Python producer emitting GPU and token metrics to Kafka (`gpu.metrics.v1`, `token.usage.v1`). |
-| **Processor**                   | `ghcr.io/brobro10000/processor`                 | `ca3`                | FastAPI-based consumer that ingests Kafka topics and writes to MongoDB.                       |
-| **Kafka**                       | `bitnami/kafka`                                 | `3.6.1-debian-11-r1` | Message broker for producers and processor; single-node for MVP.                              |
-| **MongoDB**                     | `mongo`                                         | `7.0`                | Data store for GPU and token usage metrics.                                                   |
+| Component | Registry / Image | Tag | Purpose |
+|----------|-----------------|-----|---------|
+| **Producers** | `ghcr.io/brobro10000/producers` | `ca3` | Generates GPU + token usage metrics and publishes to Kafka. |
+| **Processor** | `ghcr.io/brobro10000/processor` | `ca3` | FastAPI consumer that writes to Mongo and exposes `/metrics`. |
+| **Kafka** | `bitnami/kafka` | `3.6.1-debian-11-r1` | Message broker for streaming telemetry. |
+| **MongoDB** | `mongo` | `7.0` | Persistent storage for metrics datasets. |
 
 ---
 
 ## 📋 Rubric Mapping — CA3 Evaluation Alignment
 
-| **Category**                                              | **Weight** | **Evidence / Implementation Detail**                                                                                                                                                                                                                                                                                                                         | **Status**                                                        |
-| --------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| **1. Declarative Configuration & Infrastructure as Code** | **25%**    | - Terraform provisions EC2 VPC, networking, and SGs.<br>- Declarative K3s bootstrap via `make bootstrap-k3s` (webhook auth, TLS SANs, metrics disabled).<br>- Kubernetes manifests under `k8s/platform` and `k8s/app` define all resources.<br>- Repeatable, idempotent provisioning flow.                                                                   | ✅ Fully Met                                                       |
-| **2. Security & Access Controls**                         | **20%**    | - TLS-enabled API; kubeconfig with embedded CA.<br>- Kubelet webhook auth enabled (`authentication-token-webhook`, `authorization-mode=Webhook`).<br>- Security groups restrict public exposure.<br>- Planned Secret and NetworkPolicy manifests for namespace isolation.                                                                                    | ⚙️ Partial — Add small Secret + NetworkPolicy YAML for full marks |
-| **3. Scaling & Observability**                            | **20%**    | - Custom metrics-server deployed as static manifest.<br>- `kubectl top nodes/pods` now returns valid metrics (confirmed).<br>- HPA for `producers` scales replicas up/down dynamically during load tests.<br>- `verify-scale-hpa` script demonstrates autoscaling and cooldown success.<br>- Observed 1→3 replica scale-up and CPU utilization ~65% at peak. | ✅ Fully Met                                                       |
-| **4. Documentation, Architecture, and Clarity**           | **25%**    | - Comprehensive `README.md` with commands, diagrams, and verification targets.<br>- `architecture-tradeoffs.md` documents reasoning and future evolution.<br>- PlantUML sequence diagram visualizes provisioning flow.<br>- `conversation-summary.md` captures debug lineage.                                                                                | ✅ Fully Met                                                       |
-| **5. Execution, Correctness, and Verification**           | **10%**    | - Verified Producers → Kafka → Processor → Mongo workflow.<br>- End-to-end make targets: `verify-producers`, `verify-processor`, `verify-workflow`.<br>- Mongo counts increase for GPU metrics; token stream optional.<br>- HPA verification functional.                                                                                                     | ✅ Fully Met                                                       |
-
+| Category | Weight | Evidence | Status |
+|---------|--------|----------|--------|
+| **1. Declarative Infrastructure** | 25% | Terraform for EC2 + SGs; K3s bootstrap automated; manifests under `k8s/*` | ✅ Fully Met |
+| **2. Security & Access Controls** | 20% | No public workloads; kubeconfig restricted; SG allowlisting | ⚙️ Partial — Add NetworkPolicy + External Secrets for full credit |
+| **3. Observability & Scaling** | 20% | kube-prometheus-stack + Loki; `/metrics` scraping; **HPA scaling** Producers | ✅ Fully Met |
+| **4. Documentation & Architecture** | 25% | Architecture + Tradeoffs + Sequence diagrams + README | ✅ Fully Met |
+| **5. Execution & Correctness** | 10% | End-to-end data flow verified; HPA scale-up/down demonstrated | ✅ Fully Met |
 
 ---
 
-## 🏗️ Replication Steps
+## 🏗️ Deployment Steps
 
-### 1️⃣ Provision infrastructure (Terraform Makefile)
+### 1️⃣ Provision Infrastructure
 
 ```bash
 cd CA3/terraform
-make deploy        # init + plan (auto-detects my_ip_cidr) + apply
-make outputs       # show VPC/SG/instance outputs
-```
+make deploy         # terraform init + plan + apply
+make outputs        # confirm cluster instance IPs
+````
 
-Notes:
-
-- Override AWS profile/region as needed: `AWS_PROFILE=terraform AWS_REGION=us-east-1 make deploy`
-- Provide an explicit EC2 keypair name if not set in tfvars: `SSH_KEY_NAME=my-key make deploy`
-- Security groups allow:
-  - 22/tcp from my_ip_cidr (admin)
-  - 6443/tcp (kube-apiserver) from my_ip_cidr
-  - NodePorts (30000–32767) within the VPC (tunable)
-
----
-
-### 2️⃣ Fetch kubeconfig (cluster auto-bootstrapped)
-
-Before using kubectl, you must have a local CA3/.kube directory with a kubeconfig.yaml inside it. If it doesn't exist yet, create it:
+### 2️⃣ Bootstrap K3s + Fetch kubeconfig
 
 ```bash
 cd CA3
-mkdir -p .kube
-# This file is created by 'make kubeconfig' or 'make bootstrap-k3s'
-# touch .kube/kubeconfig.yaml    # optional placeholder
-```
-
-K3s is installed on the control-plane via cloud-init. Pull the kubeconfig locally and verify access:
-
-```bash
-cd CA3
-make tunnel
 make bootstrap-k3s
-make status
+make status         # verify node Ready
 ```
 
-If your kubeconfig uses 127.0.0.1:6443, use a temporary tunnel (see next step) while running kubectl.
-
----
-
-### 3️⃣ Tunnel for Local kubectl
-
-If your kubeconfig points to `127.0.0.1:6443`, open a port-forward tunnel:
+Optional (if using private workers):
 
 ```bash
-make tunnel
+make join-workers
 ```
 
-Then in another terminal:
+### 3️⃣ Install Observability Stack
 
 ```bash
-make status
+make bootstrap-monitoring-prereqs   # installs Helm + metrics-server
+make deploy-monitoring              # Prometheus + Grafana + Loki + Promtail
 ```
 
----
-
-### 4️⃣ Deploy All Kubernetes Resources
+Access Grafana:
 
 ```bash
-make deploy
+KUBECONFIG=.kube/kubeconfig.yaml kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+# login: admin / admin
 ```
 
-This applies everything under `CA3/k8s/` including:
-
-* Namespaces (`app`, `platform`)
-* StatefulSets for Kafka and MongoDB
-* Deployments for Processor and Producers
-* ConfigMaps/Secrets if present
-
----
-
-## 🔍 Verification & Debugging
-
-### 🌐 Check overall status
+### 4️⃣ Deploy Pipeline Workloads
 
 ```bash
-make status
-```
-
-### 🧩 Verify components
-
-```bash
-make verify            # runs verify-kafka, verify-mongo, verify-processor, verify-producers
-make verify-workflow   # optional end-to-end baseline→nudge→delta checks
-```
-
-Or individually:
-
-```bash
-make verify-kafka
-make verify-mongo
-make verify-processor
-make verify-producers
-```
-
-Each verify command:
-
-* Shows pod + service info
-* Tails logs
-* Confirms resource readiness
-
-### 🪵 Logs
-
-```bash
-make K ARGS="-n platform logs -l app=kafka --tail=100"
-make K ARGS="-n app logs -l app=processor --tail=100"
+make deploy       # applies Kafka + Mongo + Processor + Producers + HPA
+make status       # confirm all pods Running
 ```
 
 ---
 
-## ⚙️ Common Issues
+## 🔍 Verification
 
-| Component            | Symptom            | Likely Fix                                                                                        |
-| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------- |
-| **Kafka**            | `0/1` Ready        | Add `ALLOW_PLAINTEXT=yes`; ensure `ADVERTISED_LISTENERS` match pod DNS; headless `Service` exists |
-| **Processor**        | `ImagePullBackOff` | Verify image path + `imagePullSecrets`; check `KAFKA_BOOTSTRAP` and `MONGO_URL`                   |
-| **Producers**        | `ImagePullBackOff` | Same as processor; ensure Kafka hostname resolves                                                 |
-| **Mongo**            | CrashLoopBackOff   | Ensure volume mount works; check logs                                                             |
-| **kubectl validate** | TLS error          | Run `make tunnel` or regenerate kubeconfig with public IP                                         |
+| Check                | Command                 | Expected                 |
+| -------------------- | ----------------------- | ------------------------ |
+| Kafka Ready          | `make verify-kafka`     | `1/1 Running`            |
+| Mongo Ready          | `make verify-mongo`     | `1/1 Running`            |
+| Processor Health     | `make verify-processor` | `/health` returns OK     |
+| Producers Running    | `make verify-producers` | publishing logs visible  |
+| End-to-End Data Flow | `make verify-workflow`  | Mongo counts increase    |
+| Autoscaling          | `make verify-scale-hpa` | Producers scale out + in |
 
----
-
-## 🧪 Manual Debug Commands
+Monitor metrics:
 
 ```bash
-# Nodes
-KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes -o wide
-
-# Watch rollout
-make K ARGS="-n app rollout status deploy/processor -w"
-
-# Inspect services
-make K ARGS="-n platform get svc -o wide"
+# Prometheus targets
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
 ```
 
 ---
 
-## 📊 Validation Checks
+## 🧪 Example Log / Metric Checks
 
-| Step                 | Command                                | Expected Result         |
-| -------------------- | -------------------------------------- | ----------------------- |
-| Cluster up           | `make status`                          | Control plane Ready     |
-| Kafka ready          | `make verify-kafka`                    | 1/1 Running             |
-| Mongo ready          | `make verify-mongo`                    | 1/1 Running             |
-| Processor running    | `make verify-processor`                | Consumes messages       |
-| Producers running    | `make verify-producers`                | Publishes to Kafka      |
-| End-to-end data flow | `kubectl logs -n app -l app=processor` | Shows processed records |
+```bash
+# Processor Logs
+make K ARGS="-n app logs -l app=processor --tail=50"
+
+# Mongo document count
+make verify-deltas
+```
 
 ---
 
-## 📁 Repo Structure
+## 📁 Directory Structure
 
 ```
 CA3/
 ├── README.md
-├── docs/
-│   ├── architecture.md
-│   └── conversation-summary.md
-├── diagrams/
-├── screenshots/
-├── Makefile                  # SSH + deploy automation + kubeconfig + verify
-├── k8s/
-│   ├── platform/
-│   │   ├── kafka/
-│   │   │   ├── statefulset.yaml
-│   │   │   └── svc.yaml
-│   │   └── mongo/
-│   │       ├── statefulset.yaml
-│   │       └── svc.yaml
-│   └── app/
-│       ├── processor/
-│       │   └── deploy.yaml
-│       └── producers/
-│           ├── deploy.yaml
-│           ├── hpa.yaml
-│           └── config.yaml
-└── terraform/
-    ├── Makefile
-    ├── providers.tf
-    ├── main.tf
-    ├── variables.tf
-    ├── outputs.tf
-    └── modules/
-        ├── vpc/
-        ├── security_groups/
-        ├── network/
-        ├── cluster/
-        │   └── templates/
-        └── instances/
-            └── templates/
+├── architecture.md
+├── architecture-tradeoffs.md
+├── conversation-summary.md
+├── terraform/
+├── Makefile
+└── k8s/
+    ├── platform/   # Kafka + Mongo
+    ├── app/        # Processor + Producers + HPA
+    └── monitoring/ # ServiceMonitors + dashboards
 ```
 
 ---
 
-## 🎓 Grading / Demo Checklist
+## 🎓 Demo Checklist (Fast)
 
-| Category                          | Deliverable                                             | Validation                                        |
-| --------------------------------- | ------------------------------------------------------- | ------------------------------------------------- |
-| **1. Infrastructure (Terraform)** | AWS EC2 cluster provisioned with public control plane   | `make deploy` + outputs show control plane IP     |
-| **2. Cluster Setup (K3s)**        | K3s installed via cloud-init; kubeconfig pulled locally | `make kubeconfig` + `make status` shows `Ready`   |
-| **3. Namespaces**                 | `app`, `platform` created                               | `kubectl get ns`                                  |
-| **4. Platform Layer**             | Kafka + Mongo deployed via StatefulSets                 | `make verify-kafka`, `make verify-mongo`          |
-| **5. App Layer**                  | Processor + Producers deployed via Deployments          | `make verify-processor`, `make verify-producers`  |
-| **6. Connectivity**               | Processor connects to Kafka + Mongo                     | `kubectl logs -n app -l app=processor`            |
-| **7. Observability**              | Pods all `Running` + `1/1 Ready`                        | `make status`                                     |
-| **8. Automation**                 | Makefile executes full workflow end-to-end              | `make deploy`, `make verify`, `make verify-workflow` |
-| **9. Debug**                      | Demonstrate tunnel-based kubeconfig or public-IP access | `make tunnel` + `make status`                     |
-| **10. Documentation**             | Clear README with setup + results                       | ✅ This file                                       |
+| Step                         | Verified |
+| ---------------------------- | -------- |
+| Cluster Running              | ✅        |
+| Kafka & Mongo Healthy        | ✅        |
+| Processor Consuming          | ✅        |
+| Producers Publishing         | ✅        |
+| Prometheus Scraping /metrics | ✅        |
+| Grafana Dashboard Populated  | ✅        |
+| HPA Scales Producers         | ✅        |
 
 ---
 
-## 📎 Related Docs
+## ✅ Completion Notes
 
-* [architecture.md](./docs/architecture.md) — Updated CA3 cluster and namespace diagram
-* [conversation-summary.md](./docs/conversation-summary.md) — Terraform + Makefile evolution
+CA3 successfully demonstrates:
 
+* Distributed data pipeline
+* Real-time ingestion & storage
+* Full-stack observability (metrics + logs)
+* Autoscaling tied to system demand
 
----
-
-## 📸 Screenshots (by command order)
-
-- Terraform deploy (part 1)
-  
-  ![make tf deploy 1](screenshots/make_tf_deploy_1.png)
-
-- Terraform deploy (part 2)
-  
-  ![make tf deploy 2](screenshots/make_tf_deploy_2.png)
-
-- Open tunnel to API server
-  
-  ![make tunnel](screenshots/make_tunnel_3.png)
-
-- Bootstrap K3s and export kubeconfig
-  
-  ![make bootstrap-k3s](screenshots/make_bootstrap-k3s_4.png)
-
-- Cluster status (nodes/pods)
-  
-  ![make status 1](screenshots/make_status_5.png)
-
-- Apply Kubernetes manifests
-  
-  ![make deploy (k8s)](screenshots/make_kube_deploy_6.png)
-
-- Cluster status after deploy
-  
-  ![make status 2](screenshots/make_status_7.png)
-
-- Verify Kafka
-  
-  ![make verify-kafka](screenshots/make_verify-kafka_8.png)
-
-- Verify MongoDB
-  
-  ![make verify-mongo](screenshots/make_verify-mongo_9.png)
-
-- Verify Producers
-  
-  ![make verify-producers](screenshots/make_verify-producers_10.png)
-
-- Verify Processor
-  
-  ![make verify-processor](screenshots/make_verify-processor_11.png)
-
-- Verify end-to-end workflow
-  
-  ![make verify-workflow](screenshots/make_verify-workflow_12.png)
-
-- Verify HPA scale (optional)
-  
-  ![make verify-scale-hpa](screenshots/make_verify-scale-hpa_13.png)
-
-- Undeploy Kubernetes manifests
-  
-  ![make undeploy (k8s)](screenshots/make_kube_undeploy_14.png)
-
-- Terraform destroy
-  
-  ![make down](screenshots/make_tf_down_15.png)
+It prepares the environment for CA4, where durability, replication, and managed Kubernetes will be introduced.
