@@ -12,6 +12,13 @@ spec:
       containers:
         - name: processor
           image: ghcr.io/brobro10000/processor:ca3
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
           envFrom:
             - configMapRef: { name: processor-config }
             - secretRef:    { name: processor-secrets }
