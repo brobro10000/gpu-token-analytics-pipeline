@@ -498,7 +498,8 @@ namespaces: ensure-kubeconfig
 
 deploy: ensure-kubeconfig namespaces
 	@echo "🚀 Deploying all Kubernetes manifests..."
-	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -R -f $(K8S_DIR)
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -R -f $(K8S_DIR)/app
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -R -f $(K8S_DIR)/platform
 	@echo "✅ All manifests applied."
 
 deploy-all: ensure-tf

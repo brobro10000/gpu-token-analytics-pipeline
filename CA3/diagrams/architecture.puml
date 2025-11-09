@@ -1,64 +1,149 @@
-@startuml CA3_Architecture
-title CA3 – Terraform + K3s on AWS (Deployment View)
-
+@startuml CA3_Unified_Architecture
+' ==== Style ====
+skinparam backgroundColor #FFFFFF
 skinparam shadowing false
 skinparam componentStyle rectangle
-skinparam wrapWidth 200
-skinparam maxMessageSize 120
+skinparam defaultFontName Inter
+skinparam wrapWidth 220
+skinparam maxMessageSize 140
 
+title CA3 — Unified Cloud-Native Ops on top of CA2
+
+' ==== Admin / Tooling ====
 rectangle "Admin Laptop" as ADMIN {
-  component "kubectl + Makefile\n(KUBECONFIG local)" as Kubectl
-  component "SSH Tunnel\n127.0.0.1:6443 -> cp:6443" as Tunnel
+  component "Makefile + kubectl\n(KUBECONFIG local)" as Makefile
+  component "SSH Tunnel\n127.0.0.1:6443 → CP:6443" as Tunnel
 }
 
+' ==== AWS / Cluster Envelope ====
 node "AWS VPC" as VPC {
   frame "Security Groups" as SG {
-    rectangle "admin SG\nSSH (22) from your IP" as AdminSG
-    rectangle "k8s_nodes SG\n6443 (API), 10250 (kubelet)\nNodePorts/CNI internal" as K8sSG
+    rectangle "admin-sg\n22/tcp from your IP" as AdminSG
+    rectangle "k8s-nodes-sg\n6443 (API), 10250 (kubelet)\nNodePorts/CNI internal" as NodesSG
   }
 
   node "Subnet" as SUB {
-    node "EC2: Control Plane" as CP {
-      component "K3s Server\nAPI :6443\ncoredns / metrics-server / traefik" as K3sCP
-      artifact "kubeconfig (remote)\n/etc/rancher/k3s/k3s.yaml\n~/kubeconfig-external.yaml" as KubeCfg
+    node "EC2 Control Plane\nip-10-0-1-224" as CP {
+      component "K3s Server\nAPI :6443\nCoreDNS / Traefik / local-path-provisioner" as K3sCP
+      artifact "kubeconfig (remote)\n/etc/rancher/k3s/k3s.yaml\n~/kubeconfig-external.yaml" as RemoteKubeCfg
     }
 
-    node "EC2: Worker 1" as W1 {
-      component "K3s Agent" as Agent1
-    }
-    node "EC2: Worker 2" as W2 {
-      component "K3s Agent" as Agent2
-    }
+node "EC2 Worker 1" as W1 {
+  component "K3s Agent" as Agent1
+}
 
-    package "Kubernetes Cluster" as K8S {
-      package "Namespace: platform" as NS_PLATFORM {
-        component "Kafka (StatefulSet)\nHeadless Service: kafka" as Kafka
-        component "MongoDB (StatefulSet)\nService: mongo" as Mongo
+node "EC2 Worker 2" as W2 {
+  component "K3s Agent" as Agent2
+}
+
+
+    package "Kubernetes Cluster (K3s)" as K8S {
+      ' ===== Platform Namespace =====
+      package "namespace: platform" as NS_PLATFORM {
+        component "Kafka (StatefulSet)\nService: kafka (Headless)" as Kafka
+        component "MongoDB (StatefulSet)\nService: mongo (ClusterIP)" as Mongo
       }
-      package "Namespace: app" as NS_APP {
-        component "Processor (Deployment)\nService: processor" as Processor
-        component "Producers (Deployment/HPA)" as Producers
+
+      ' ===== App Namespace =====
+      package "namespace: app" as NS_APP {
+        component "Producers (Deployment + HPA)\nConfig: RATE, topics" as Producers
+        component "Processor (Deployment)\nFastAPI + starlette_exporter" as Processor
+        folder "ConfigMap(s)\n(app settings)" as AppCfg
+        folder "Secret(s)\nDB/Kafka creds, TLS" as AppSecrets
       }
+
+      ' ===== Observability / Monitoring =====
+      package "namespace: monitoring" as NS_MON {
+        component "Prometheus Operator\n(CRDs: ServiceMonitor, PodMonitor,\nPrometheus, Alertmanager…)" as Operator
+        component "Prometheus (kube-prometheus-stack)\nScrapes: kubelets, kube-state-metrics,\nServiceMonitor/PodMonitor targets" as Prom
+        component "Grafana\nDashboards: CA3 Unified" as Graf
+        component "Loki" as Loki
+        component "Promtail (DaemonSet)" as Promtail
+      }
+
+      ' ===== Policy / Security (cluster-scoped) =====
+      package "Policy / Security" as POL {
+        component "NetworkPolicies\n(app↔platform allow-list)" as NetPol
+        component "Secrets/TLS\n(kafka, mongo, app)" as SecTLS
+      }
+
+      ' ===== Autoscaling =====
+      component "HPA (Producers)\nCPU target or custom metric\nscale 1..N" as HPA_PROD
+      component "HPA (Processor) [optional]\nCPU target" as HPA_PROC
     }
   }
 }
 
-' --- Relationships ---
-Kubectl --> Tunnel : kubectl API calls\n(via localhost:6443)
-Tunnel --> K3sCP : forwards to :6443
-Kubectl ..> KubeCfg : uses
+' ==== Resilience / Chaos ====
+package "Resilience Drill" as DRILL {
+  component "Pod delete / network fault\n(kubectl delete pod … / tc/iptables)" as Chaos
+}
 
+' ===== Admin flows =====
+Makefile --> Tunnel : kubectl API via 127.0.0.1:6443
+Tunnel --> K3sCP : forwards to :6443
+Makefile ..> RemoteKubeCfg : uses
+
+' ===== Cluster membership =====
 K3sCP -down- Agent1
 K3sCP -down- Agent2
 
-Producers --> Kafka : publish
+' ===== Data pipeline =====
+Producers --> Kafka : publish: gpu.metrics.v1\ntoken.usage.v1
 Processor --> Kafka : consume
-Processor --> Mongo : write
+Processor --> Mongo : inserts (gpu_metrics,\ntoken_usage collections)
 
-note right of SG
-admin SG: SSH(22) from your IP
-k8s_nodes SG: 6443/10250 internal
-Optional: 6443 from admin IP
+' ===== Observability wiring =====
+Prom ..> Kafka : scrape exporter / JVM metrics (if present)
+Prom ..> Mongo : scrape db/pod metrics
+Prom ..> Processor : scrape /metrics (starlette_exporter)
+Prom ..> Producers : scrape pod/container metrics
+Operator ..> Prom : manages Prometheus via CRDs
+Graf ..> Prom : Prometheus datasource (metrics/alerts)
+Graf ..> Loki : Loki datasource (logs)
+Promtail --> Loki : ship container logs
+Producers --> Promtail : stdout/stderr
+Processor --> Promtail : stdout/stderr
+Kafka --> Promtail : broker logs
+Mongo --> Promtail : db logs
+
+' ===== Autoscaling logic =====
+HPA_PROD ..> Producers : scales replicas
+HPA_PROD ..> Prom : (optional) custom metric\n(e.g., consumer lag)
+HPA_PROC ..> Processor : scales replicas
+
+' ===== Policy / Security relations =====
+NetPol -[dotted]-> Producers
+NetPol -[dotted]-> Processor
+NetPol -[dotted]-> Kafka
+NetPol -[dotted]-> Mongo
+
+SecTLS -[dotted]-> Kafka
+SecTLS -[dotted]-> Mongo
+SecTLS -[dotted]-> Processor
+SecTLS -[dotted]-> Producers
+
+' ===== Chaos relations =====
+Chaos ..> Producers
+Chaos ..> Processor
+Chaos ..> Kafka
+Chaos ..> Mongo
+
+' ===== Notes =====
+note right of NS_MON
+kube-prometheus-stack provides:
+• Prometheus + Alertmanager
+• Grafana (import CA3 Unified JSON)
+• kube-state-metrics & node-exporter
+• ServiceMonitor/PodMonitor CRDs
+end note
+
+note bottom of NS_APP
+Processor exports /metrics via starlette_exporter
+→ Prometheus scrapes for SLO/SLI panels:
+• HTTP RPS / latency / 5xx
+• Pod CPU/Memory
+• Consumer lag (if exported)
 end note
 
 @enduml

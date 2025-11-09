@@ -1,52 +1,123 @@
-@startuml
-title CA3 Provisioning Flow (k3s + Metrics Server + Kafka/Mongo + Producers/Processor)
+@startuml CA3_Provisioning_Sequence
+title CA3 Provisioning — From Infra to Observability
 
-actor Dev as Hamzah
-participant "Makefile" as Make
-participant "SSH\n(control plane)" as SSH
-participant "k3s server\n(control-plane node)" as CP
-participant "K8s API Server\n(k3s apiserver)" as API
-participant "Worker Node(s)\n(kubelet)" as Nodes
-collections "Platform ns=platform\nKafka, Mongo" as Platform
-collections "App ns=app\nproducers, processor" as App
-database "MongoDB\nca3.gpu_metrics / token_usage" as Mongo
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #222
+  LifeLineBorderColor #555
+  LifeLineBackgroundColor #f8f9fb
+  ParticipantBorderColor #333
+  ParticipantBackgroundColor #f3f6fa
+  BoxBorderColor #999
+  BoxBackgroundColor #ffffff
+}
 
-== Bootstrap k3s ==
-Hamzah -> Make: make bootstrap-k3s
-Make -> SSH: ssh 'bash -s' (bootstrap script)
-SSH -> CP: Install k3s server\n--tls-san PUB_IP/PRIV_IP\n--disable metrics-server\n--kubelet auth webhook
-CP -> CP: Write kubeconfig (external)
-CP -> API: Start control plane
-API -> Nodes: Register kubelets, schedule system pods
+' --- Actors / Systems ---
+actor Dev as "Dev Laptop\n(Makefile + kubectl)"
+participant TF as "Terraform\n(./terraform)"
+participant AWS as "AWS EC2 / VPC"
+participant CP as "Control Plane\n(k3s server)"
+participant W1 as "Worker-1\n(k3s agent)"
+participant W2 as "Worker-2\n(k3s agent)"
+participant K8S as "Kubernetes API\n(k3s)"
+participant NS as "Namespaces:\nplatform / app / monitoring"
+participant HELM as "Helm CLI"
+participant MS as "metrics-server"
+participant MON as "Monitoring Stack\n(kube-prom stack, Loki/Promtail, Grafana)"
+participant PLATFORM as "Platform:\nKafka (STS) / Mongo (STS)"
+participant APP as "App:\nProcessor (Deploy) / Producers (Deploy+HPA)"
+participant HPA as "HorizontalPodAutoscaler"
 
-== Provision Platform ==
-Hamzah -> API: kubectl apply -f platform/
-API -> Platform: create Kafka + MongoDB
-Platform -> Platform: Kafka listens 9092 (advertised.listeners)
-Platform -> Platform: Mongo ready (DB=ca3)
+' --- 1) Infra provisioning with Terraform ---
+Dev -> TF : make ensure-tf / terraform apply
+TF -> AWS : Provision EC2 (control-plane, workers), SGs, outputs
+note right of AWS
+  Outputs exported:
+  • control_plane_public_ip
+  • worker_private_ips
+  • instance_private_ips (vm1..vm4)
+  • remote_kubeconfig_path (if any)
+end note
+AWS --> TF : Deployed resources + outputs
+TF --> Dev : terraform output -json
 
-== Provision App Layer ==
-Hamzah -> API: kubectl apply -f app/
-API -> App: create producers + processor
-App -> Platform: producers → Kafka (publish gpu.metrics.v1, token.usage.v1)
-App -> Platform: processor → Kafka (consume)
-App -> Mongo: processor → insert metrics, token usage docs
+' --- 2) Bootstrap k3s server + kubeconfig export ---
+Dev -> CP : make bootstrap-k3s (ssh to CP)
+CP -> CP : Install k3s server\n(--write-kubeconfig-mode=644)\n(--tls-san PUB/PRIV IPs)
+CP -> CP : Export /home/ubuntu/kubeconfig-external.yaml
+CP --> Dev : scp kubeconfig → .kube/kubeconfig.yaml
 
-== Verify Workflow ==
-Hamzah -> API: make verify-workflow
-API -> App: restart producers (nudge)
-App -> Platform: publish metrics to Kafka
-Platform -> Mongo: processor consumes, writes to DB
-Hamzah -> Mongo: check document deltas
-note right of Hamzah
-✅ gpu_metrics increased
-⚠️ token_usage may stay 0 if producer disabled
+' --- 3) Join workers (optional but recommended) ---
+Dev -> CP : make get-token
+CP --> Dev : /var/lib/rancher/k3s/server/node-token
+Dev -> W1 : make join-worker-1 (via ProxyJump CP)\nK3S_URL=https://<CP-PRIV>:6443
+W1 -> CP : Register agent
+CP --> W1 : Node joins
+Dev -> W2 : make join-worker-2 (via ProxyJump CP)
+W2 -> CP : Register agent
+CP --> W2 : Node joins
+Dev -> K8S : make status (kubectl get nodes -A)
+
+' --- 4) Monitoring prerequisites: Helm + metrics-server ---
+Dev -> CP : make bootstrap-monitoring-prereqs
+CP -> CP : Install Helm (get-helm-3)
+CP -> K8S : kubectl apply metrics-server components.yaml
+K8S -> MS : Deploy metrics-server
+MS --> Dev : Ready (rollout status)
+
+' --- 5) Namespaces and CRDs via Helm charts ---
+Dev -> NS : make namespaces\n(create: platform, app, monitoring)
+Dev -> HELM : helm repo add + update
+Dev -> MON : make deploy-monitoring
+HELM -> K8S : install kube-prometheus-stack (Prometheus, Operator CRDs, Grafana)
+HELM -> K8S : install loki-stack (Loki + Promtail)
+K8S --> MON : Pods becoming Ready (operator, alertmanager, prometheus, grafana, loki, promtail)
+
+note over MON
+  After install:
+  • ServiceMonitor CRD available
+  • Grafana svc/monitoring-grafana (port-forward 3000:80)
+  • Prometheus scraping k8s metrics
 end note
 
-== Troubleshooting ==
-Hamzah -> Platform: inspect Kafka svc/endpoints
-Platform -> App: processor reconnects once listeners align
-Hamzah -> API: kubectl logs / rollout status
-API -> App: confirm stable pipelines
+' --- 6) Apply application/platform manifests ---
+Dev -> K8S : make deploy (kubectl apply -R -f k8s/)
+K8S -> PLATFORM : Create Kafka STS + Svc, Mongo STS + Svc
+K8S -> APP : Create ConfigMaps/Secrets/Services\nProducers Deploy(+HPA), Processor Deploy
+K8S -> HPA : Register HPA for producers\n(and/or processor if configured)
+
+' --- 7) Readiness / Verify ---
+Dev -> K8S : make verify-preflight\n(rollout status: kafka/mongo/processor)
+K8S --> Dev : OK or errors
+Dev -> PLATFORM : make verify-kafka / verify-mongo\n(kubectl logs, svc, pods)
+Dev -> APP : make verify-processor / verify-producers\n(kubectl logs, health)
+APP --> Dev : /health OK, logs visible
+
+' --- 8) E2E nudge + assertions ---
+Dev -> APP : make verify-deltas\n(restart producers)
+APP -> PLATFORM : publish → Kafka\nprocessor consumes → Mongo inserts
+PLATFORM --> Dev : Mongo counts increased (gpu_metrics, token_usage)
+
+' --- 9) Autoscaling sanity (if desired) ---
+Dev -> HPA : make verify-scale-hpa\n(temporarily set env RATE=burst)
+HPA -> APP : Scale producers up/down based on CPU
+HPA --> Dev : desiredReplicas observed
+
+' --- 10) Dashboard access ---
+Dev -> MON : kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+MON --> Dev : Grafana UI (admin/admin)\nImport "grafana-ca3-unified.json"
+
+' --- Notes / Failure branches ---
+alt ServiceMonitor CRD missing
+  K8S --> Dev : "no matches for kind ServiceMonitor"
+  Dev -> MON : Ensure kube-prometheus-stack (operator/CRDs) installed in 'monitoring'
+end
+
+alt CPU metrics missing for HPA
+  MS --> Dev : metrics-server not Ready
+  Dev -> CP : rerun bootstrap-monitoring-prereqs\n(wait for rollout)
+end
 
 @enduml
