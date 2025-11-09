@@ -32,7 +32,7 @@ variable "name" {
 variable "control_instance_type" {
   description = "Instance type for the k3s control-plane node"
   type        = string
-  default     = "t3.small"
+  default     = "c7i-flex.large"
 }
 
 variable "worker_instance_type" {

@@ -4,6 +4,8 @@ import time
 import random
 from datetime import datetime, UTC
 from confluent_kafka import Producer, KafkaException
+from fastapi import FastAPI
+from starlette_exporter import PrometheusMiddleware, handle_metrics
 
 # --- Config (env-overridable) ---
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "10.0.1.10:9092")
@@ -61,6 +63,9 @@ def load_seeds() -> list[dict]:
     raise RuntimeError("No valid seed file found (tried GPU_SEED and GPU_SEED_LOCAL)")
 
 def main():
+    app = FastAPI()
+    app.add_middleware(PrometheusMiddleware)
+    app.add_route("/metrics", handle_metrics)
     random.seed()  # system entropy
     seeds = load_seeds()
     sent = 0

@@ -177,6 +177,14 @@ verify-processor:
 	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app exec -it $$(KUBECONFIG=$(KUBECONFIGL) kubectl -n app get pod -l app=processor -o name | head -n 1) -- \
 		curl -sf http://localhost:8080/health || echo "Health check failed" || true
 
+verify-processor-health:
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n app port-forward deploy/processor 18080:8080 >/dev/null 2>&1 & \
+	PID=$$!; \
+	sleep 2; \
+	set -e; \
+	curl -sf http://127.0.0.1:18080/health && echo "✅ Processor healthy"; \
+	kill $$PID
+
 # --- Producers ---
 verify-producers:
 	@echo "🔎 [Producers] Deployment + Pods"
@@ -353,6 +361,56 @@ bootstrap-k3s:
 	@echo "✅ Done! You can now run:"
 	@echo "   KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes -o wide"
 
+bootstrap-monitoring-prereqs:
+	@echo "🔧 Installing monitoring prerequisites (helm + metrics-server)..."
+	@ssh -tt -i ~/.ssh/ca0 -o StrictHostKeyChecking=no ubuntu@$(CP_PUB) '\
+		set -euo pipefail; \
+		echo "[INFO] Installing Helm..."; \
+		curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash; \
+		echo "[INFO] Applying metrics-server..."; \
+		kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml; \
+		echo "[INFO] Waiting for metrics-server to become Ready..."; \
+		kubectl -n kube-system rollout status deploy/metrics-server --timeout=180s || true; \
+		echo "[INFO] metrics-server installed."; \
+		exit 0'
+	@echo "✅ Prerequisites installed! You can now run:"
+	@echo "   make deploy-monitoring    # (Prometheus/Grafana/Loki stage)"
+
+ensure-helm-local:
+	@command -v helm >/dev/null 2>&1 && \
+	  echo "✅ Helm already installed locally." || \
+	  (echo "🛠 Installing Helm locally..." && \
+	   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash)
+
+
+deploy-monitoring: ensure-helm-local
+	@echo "📡 Deploying monitoring stack (Prometheus + Grafana + Loki + Promtail)..."
+	@KUBECONFIG=$(KUBECONFIGL) helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null
+	@KUBECONFIG=$(KUBECONFIGL) helm repo add grafana https://grafana.github.io/helm-charts >/dev/null
+	@KUBECONFIG=$(KUBECONFIGL) helm repo update >/dev/null
+
+	@echo "📦 Installing kube-prometheus-stack..."
+	@KUBECONFIG=$(KUBECONFIGL) helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+		-n monitoring --create-namespace \
+		--set grafana.adminPassword="admin" \
+		--set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+
+	@echo "📦 Installing Loki + Promtail..."
+	@KUBECONFIG=$(KUBECONFIGL) helm upgrade --install loki grafana/loki-stack \
+		-n monitoring \
+		--set grafana.enabled=false \
+		--set promtail.enabled=true
+
+	@echo "⏳ Waiting for pods in monitoring namespace to be Ready..."
+	@KUBECONFIG=$(KUBECONFIGL) kubectl wait --for=condition=Available deployment/monitoring-grafana -n monitoring --timeout=300s || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl wait --for=condition=Available deployment/monitoring-kube-prometheus-stack-operator -n monitoring --timeout=300s || true
+
+	@echo "✅ Monitoring stack deployed!"
+	@echo ""
+	@echo "👉 To access Grafana locally, run:"
+	@echo "   KUBECONFIG=$(KUBECONFIGL) kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80"
+	@echo "   Login: admin / admin"
+
 
 # ---------- Kubeconfig pull ----------
 kubeconfig: ensure-tf
@@ -435,11 +493,42 @@ namespaces: ensure-kubeconfig
 	  KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -f -
 	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) create ns app --dry-run=client -o yaml | \
 	  KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -f -
+	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) create ns monitoring --dry-run=client -o yaml | \
+	  KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -f -
 
 deploy: ensure-kubeconfig namespaces
 	@echo "🚀 Deploying all Kubernetes manifests..."
 	@KUBECONFIG=$(KUBECONFIGL) kubectl $(KUBECTL_OPTS) apply -R -f $(K8S_DIR)
 	@echo "✅ All manifests applied."
+
+deploy-all: ensure-tf
+	@echo "🚀 CA3 Full Deployment Pipeline Starting"
+
+	@echo "🔹 1) Bootstrapping K3s Control Plane"
+	@$(MAKE) bootstrap-k3s
+
+	@echo "🔹 2) Installing monitoring prerequisites (Helm + metrics-server)"
+	@$(MAKE) bootstrap-monitoring-prereqs
+
+	@echo "🔹 3) Creating namespaces & deploying platform + app workloads"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl apply -R -f k8s/platform
+	@KUBECONFIG=$(KUBECONFIGL) kubectl apply -R -f k8s/app
+
+	@echo "🔹 4) Deploying monitoring stack (Prometheus + Grafana + Loki)"
+	@$(MAKE) deploy-monitoring
+
+	@echo "🔹 5) Re-applying ServiceMonitors (now that CRDs exist)"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl apply -R -f $(K8S_DIR)/monitoring || true
+
+	@echo "✅ CA3 fully deployed!"
+	@echo ""
+	@echo "🟢 Check cluster status:"
+	@echo "   make status"
+	@echo ""
+	@echo "🟣 Open Grafana:"
+	@echo "   KUBECONFIG=$(KUBECONFIGL) kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80"
+	@echo "   Login → admin / admin"
+
 
 undeploy: ensure-kubeconfig
 	@echo "🧹 Deleting all Kubernetes resources..."
