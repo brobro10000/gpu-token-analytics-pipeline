@@ -20,7 +20,6 @@ gpu-token-analytics-pipeline/
 │   │   └── hardware-architecture.puml
 │   ├── docs/
 │   │   ├── architecture.md
-│   │   ├── architecture-tradeoffs.md
 │   │   └── conversation-summary.md
 │   ├── schemas/
 │   │   ├── gpu.metrics.v1.json
@@ -28,65 +27,47 @@ gpu-token-analytics-pipeline/
 │   ├── screenshots/
 │   │   └── ...
 │   ├── demo/
-│   │   └── smoke-test.sh
+│   │   ├── smoke-test.sh
+│   │   └── screenshots/
 │   ├── vm1-kafka/
 │   │   ├── docker-compose.yml
-│   │   ├── config/
-│   │   │   └── server.properties
-│   │   └── README.md
+│   │   └── config/
 │   ├── vm2-mongo/
 │   │   ├── docker-compose.yml
-│   │   ├── config/
-│   │   │   └── init-scripts/indexes.js
-│   │   └── README.md
+│   │   └── config/
+│   │       └── init-scripts/
+│   │           └── indexes.js
 │   ├── vm3-processor/
 │   │   ├── docker-compose.yml
-│   │   ├── Dockerfile
 │   │   └── app/
 │   │       ├── main.py
-│   │       └── requirements.txt
+│   │       └── utils/
 │   └── vm4-producers/
 │       ├── docker-compose.yml
-│       ├── Dockerfile
-│       ├── producer.py
-│       ├── gpu_seed.json
-│       └── requirements.txt
+│       └── producer.py
 ├── CA1/
 │   ├── README.md
 │   ├── CA1-step-by-step-guide.md
-│   ├── docs/
-│   │   ├── architecture.md
-│   │   ├── architecture-tradeoffs.md
-│   │   └── conversation-summary.md
 │   ├── diagrams/
-│   │   ├── architecture-final.puml
-│   │   └── provisioning-sequence-final.puml
+│   │   └── architecture-final.puml
+│   ├── docs/
+│   │   └── architecture.md
 │   ├── screenshots/
-│   │   └── ...
 │   ├── terraform/
 │   │   ├── Makefile
-│   │   ├── main.tf
-│   │   ├── variables.tf
-│   │   ├── outputs.tf
 │   │   ├── providers.tf
-│   │   ├── terraform.tfvars
-│   │   ├── terraform.tfvars.example
-│   │   ├── terraform.tfstate
-│   │   ├── terraform.tfstate.backup
-│   │   ├── modules/
-│   │   │   ├── vpc/
-│   │   │   ├── security_groups/
-│   │   │   ├── network/
-│   │   │   └── instances/
-│   │   │       └── templates/
-│   │   └── tfplan
+│   │   └── modules/
+│   │       ├── instances/
+│   │       │   └── templates/
+│   │       ├── network/
+│   │       ├── security_groups/
+│   │       └── vpc/
 │   └── Makefile
 ├── CA2/
 │   ├── README.md
-│   ├── architecture.md
-│   ├── conversation-summary.md
-│   ├── diagrams/
 │   ├── docs/
+│   │   └── architecture.md
+│   ├── diagrams/
 │   ├── screenshots/
 │   ├── Makefile
 │   ├── k8s/
@@ -105,27 +86,55 @@ gpu-token-analytics-pipeline/
 │   │           ├── hpa.yaml
 │   │           └── config.yaml
 │   └── terraform/
-│       ├── Makefile
 │       ├── providers.tf
 │       ├── main.tf
 │       ├── variables.tf
 │       ├── outputs.tf
 │       └── modules/
-│           ├── vpc/
-│           ├── security_groups/
-│           ├── network/
 │           ├── cluster/
 │           │   └── templates/
-│           └── instances/
-│               └── templates/
+│           ├── instances/
+│           │   └── templates/
+│           ├── network/
+│           ├── security_groups/
+│           └── vpc/
 ├── CA3/
 │   ├── README.md
-│   ├── architecture.md
-│   └── conversation-summary.md
+│   ├── docs/
+│   │   ├── architecture.md
+│   │   ├── SLI.md
+│   │   ├── SLA.md
+│   │   └── SLO.md
+│   ├── diagrams/
+│   │   ├── architecture.puml
+│   │   └── provisioning-sequence-final.puml
+│   ├── screenshots/
+│   │   └── ...
+│   ├── Makefile
+│   ├── k8s/
+│   │   ├── platform/
+│   │   │   ├── kafka/
+│   │   │   └── mongo/
+│   │   ├── app/
+│   │   │   ├── processor/
+│   │   │   └── producers/
+│   │   └── monitoring/
+│   │       └── service-monitoring/
+│   └── terraform/
+│       ├── providers.tf
+│       ├── main.tf
+│       ├── variables.tf
+│       ├── outputs.tf
+│       └── modules/
+│           ├── cluster/
+│           │   └── templates/
+│           ├── instances/
+│           │   └── templates/
+│           ├── network/
+│           ├── security_groups/
+│           └── vpc/
 ├── CA4/
-│   ├── README.md
-│   ├── architecture.md
-│   └── conversation-summary.md
+│   └── README.md
 ├── README.md
 └── infracost_test.tf
 ```
@@ -666,3 +675,178 @@ make down
 - Terraform destroy
   
   ![make down](CA2/screenshots/make_tf_down_15.png)
+
+
+## CA3 — Cloud-Native Ops (Observability + Autoscaling + Logs)
+
+Goal: Extend CA2 by adding a full observability stack (Prometheus, Grafana), centralized logs (Loki + Promtail), and autoscaling (HPA) to the GPU analytics pipeline on K3s.
+
+Authoritative references for CA3:
+- CA3 overview and workflow: CA3/README.md
+- Architecture and decisions: CA3/docs/architecture.md
+- SLIs and SLOs: CA3/docs/SLI.md, CA3/docs/SLO.md
+- Conversation and evolution: CA3/docs/conversation-summary.md
+
+### 1) Software Stack and Layout (Kubernetes + Monitoring)
+- Namespaces:
+  - platform: Kafka, MongoDB
+  - app: Processor (FastAPI with `starlette_exporter`), Producers
+  - monitoring: kube-prometheus-stack (Prometheus Operator, Prometheus, Alertmanager, Grafana), Loki, Promtail
+- Services/Components:
+  - Processor exposes `/metrics` for Prometheus scraping
+  - HPA scales Producers based on CPU utilization
+  - Grafana dashboards visualize pipeline throughput and system health
+
+### 2) Environment Provisioning (Terraform)
+Prereqs (local): Terraform ≥ 1.6, AWS CLI v2, existing EC2 key pair, jq, curl.
+
+```bash
+cd CA3/terraform
+make deploy        # terraform init + plan + apply
+make outputs       # show VPC/SG/instance outputs
+```
+
+Notes:
+- Override AWS profile/region as needed: `AWS_PROFILE=terraform AWS_REGION=us-east-1 make deploy`
+- Provide an explicit EC2 keypair name if not set in tfvars: `SSH_KEY_NAME=my-key make deploy`
+
+### 3) Kubeconfig and Cluster Access
+K3s is installed on the control plane and the kubeconfig is retrieved via the Makefile.
+
+```bash
+cd CA3
+make bootstrap-k3s    # scp kubeconfig into CA3/.kube/kubeconfig.yaml
+make status           # KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes/pods
+```
+
+### 4) Install Observability Stack
+Installs Helm/metrics-server prerequisites and the kube-prometheus-stack with Loki/Promtail.
+
+```bash
+make bootstrap-monitoring-prereqs
+make deploy-monitoring
+```
+
+Port-forward to access UIs:
+
+```bash
+# Grafana (http://localhost:3000) — login: admin / admin
+KUBECONFIG=.kube/kubeconfig.yaml kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+
+# Prometheus (http://localhost:9090)
+KUBECONFIG=.kube/kubeconfig.yaml kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
+```
+
+### 5) Deploy Kubernetes Manifests (Platform + App)
+```bash
+make deploy        # applies Kafka + Mongo + Processor + Producers + HPA
+make status        # confirm all pods Running
+```
+
+### 6) Data Pipeline Verification
+Use the CA3 Makefile helpers:
+
+```bash
+make verify            # runs verify-kafka, verify-mongo, verify-processor, verify-producers
+make verify-workflow   # end-to-end baseline→nudge→delta checks
+
+# Spot checks
+make verify-kafka
+make verify-mongo
+make verify-processor
+make verify-producers
+
+# Autoscaling demo (requires metrics-server)
+make verify-scale-hpa
+```
+
+Logs and troubleshooting:
+```bash
+make K ARGS="-n platform logs -l app=kafka --tail=100"
+make K ARGS="-n app logs -l app=processor --tail=100"
+make K ARGS="-n monitoring logs -l app.kubernetes.io/name=loki --tail=100"
+```
+
+### 7) Security Notes
+- No public workloads exposed; cluster services are ClusterIP/Headless by default
+- Security Groups restricted to admin IP and intra-VPC traffic
+- For full credit, add NetworkPolicies and manage sensitive values via External Secrets
+
+### 8) Deliverables Checklist (what to include in CA3)
+- Terraform evidence: plan/apply logs or screenshots; `make outputs`
+- Kubeconfig retrieval and `make status` showing nodes Ready
+- Monitoring stack proof: port-forwards, Prometheus targets Up, Grafana dashboards populated
+- Deployed resources: `kubectl get pods -A` screenshots and verify targets
+- Architecture link: CA3/docs/architecture.md; SLIs/SLOs (docs/SLI.md, docs/SLO.md)
+- Short demo: `make verify-workflow` and HPA scaling (`make verify-scale-hpa`)
+- Any deviations from CA2 stack and rationale
+
+### 9) Grading Mapping
+- Observability & Logs: kube-prometheus-stack installed; Processor `/metrics` scraped; Loki/Promtail logs visible
+- Autoscaling: HPA scales Producers up/down under load; cooldown observed
+- Documentation & Diagrams: this README section + CA3/README.md + CA3/docs/architecture.md
+- Execution & Correctness: end-to-end flow verified; Mongo counts increase
+
+### 10) Quickstart (TL;DR)
+```bash
+# 1) Provision infra
+cd CA3/terraform
+make deploy && make outputs
+
+# 2) Pull kubeconfig and verify cluster
+cd ..
+make bootstrap-k3s
+make status
+
+# 3) Install monitoring stack
+make bootstrap-monitoring-prereqs
+make deploy-monitoring
+
+# 4) Deploy everything
+make deploy
+
+# 5) Verify and demo scaling
+make verify
+make verify-workflow
+make verify-scale-hpa
+```
+
+### 11) Teardown
+```bash
+cd CA3/terraform
+make down
+```
+
+### CA3 — Screenshots (by command order)
+
+- Deploy observability stack
+  
+  ![deploy monitoring](CA3/screenshots/deploy-all-monitoring-stack.png)
+
+- Cluster status with monitoring
+  
+  ![make status with monitoring](CA3/screenshots/make%20status%20with%20monitoring.png)
+
+- Port-forward Prometheus
+  
+  ![tunnel prometheus](CA3/screenshots/tunnel%20prometheus.png)
+
+- Port-forward Grafana
+  
+  ![tunnel grafana](CA3/screenshots/tunnel%20grafana.png)
+
+- Prometheus query: `up`
+  
+  ![prometheus query up](CA3/screenshots/prometheus-query-up.png)
+
+- Prometheus `up` query visualization
+  
+  ![prometheus query up visualization](CA3/screenshots/prometheus-query-up-visualization.png)
+
+- Prometheus Alerts
+  
+  ![prometheus alerts](CA3/screenshots/prometheus-alerts.png)
+
+- Grafana Loki shows log data
+  
+  ![grafana loki data](CA3/screenshots/grafana-loki-data.png)
