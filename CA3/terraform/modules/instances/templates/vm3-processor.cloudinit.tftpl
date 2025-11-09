@@ -1,0 +1,122 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+write_files:
+  # Compose runs the image we build from Git
+  - path: /opt/processor/docker-compose.yml
+    permissions: "0644"
+    content: |
+      version: "3.8"
+      services:
+        processor:
+          container_name: processor
+          image: ${IMAGE_TAG}
+          restart: unless-stopped
+          env_file: /opt/processor/.env
+          ports:
+            - "8080:8080"
+          user: "10001:10001"
+          healthcheck:
+            test: ["CMD-SHELL", "curl -sf http://localhost:8080/health >/dev/null"]
+            interval: 10s
+            timeout: 5s
+            start_period: 60s
+            retries: 20
+
+  # Runtime env the service reads
+  - path: /opt/processor/.env
+    permissions: "0644"
+    content: |
+      KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP}
+      MONGO_URL=${MONGO_URL}
+      PRICE_PER_HOUR_USD=${PRICE_PER_HOUR_USD}
+      HOST=0.0.0.0
+      PORT=8080
+
+  # Boot script: build image from remote Git, up, wait healthy
+  - path: /usr/local/bin/processor-env-refresh.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      log(){ echo "[processor-env-refresh] $*"; }
+      export DOCKER_BUILDKIT=1
+
+      # Wait for Docker
+      for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then break; fi
+        log "Docker not ready ($i/30)"; sleep 2
+      done
+
+      # Build directly from remote Git context:
+      # Docker understands: https://github.com/ORG/REPO.git#REF:SUBDIR
+      GIT_CTX="${APP_GIT_URL}#${APP_GIT_REF}:${APP_SUBDIR}"
+      IMAGE="${IMAGE_TAG}"
+
+      log "docker build --pull -t $${IMAGE} $${GIT_CTX}"
+      for n in 1 2 3; do
+        if docker build --pull -t "$${IMAGE}" "$${GIT_CTX}"; then break; fi
+        log "Build attempt $n failed, retrying in 10s..."; sleep 10
+      done
+
+      install -d -m 0755 /opt/processor
+      cd /opt/processor
+      log "docker compose up -d"
+      docker compose up -d
+
+      # Wait for health
+      for i in $(seq 1 120); do
+        status="$(docker inspect --format='{{.State.Health.Status}}' processor 2>/dev/null || echo unknown)"
+        if [ "$status" = "healthy" ]; then
+          log "Processor healthy"
+          exit 0
+        fi
+        log "Waiting for health... ($i/120, current: $status)"
+        sleep 2
+      done
+
+      log "Processor did not become healthy in time"; exit 1
+
+  # Systemd: run the refresh each boot/stop-start
+  - path: /etc/systemd/system/processor-env-refresh.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Build-from-Git and start Processor (Compose); wait for health
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/processor-env-refresh.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    retry(){ for i in 1 2 3; do "$@" && break || { echo "retry $i for: $*"; sleep 8; }; done; }
+
+  # Install Docker (Ubuntu 24.04 "noble")
+  - |
+    retry apt-get update -y
+    retry apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    . /etc/os-release
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+    retry apt-get update -y
+    retry apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu || true
+  - systemctl daemon-reload
+  - systemctl enable --now processor-env-refresh.service
+
+  - |
+    date | tee /var/log/ca3-processor-cloudinit.done
+    echo "OK" > /opt/processor/CLOUDINIT_OK

@@ -16,7 +16,7 @@ jobs:
     env:
       IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/producers
       CONTEXT: ./CA0/vm4-producers
-      TAG: ca2
+      TAG: ca3
     steps:
       - uses: actions/checkout@v4
       - name: Set up Buildx

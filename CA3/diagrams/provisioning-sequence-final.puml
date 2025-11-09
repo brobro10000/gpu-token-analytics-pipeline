@@ -1,0 +1,52 @@
+@startuml
+title CA3 Provisioning Flow (k3s + Metrics Server + Kafka/Mongo + Producers/Processor)
+
+actor Dev as Hamzah
+participant "Makefile" as Make
+participant "SSH\n(control plane)" as SSH
+participant "k3s server\n(control-plane node)" as CP
+participant "K8s API Server\n(k3s apiserver)" as API
+participant "Worker Node(s)\n(kubelet)" as Nodes
+collections "Platform ns=platform\nKafka, Mongo" as Platform
+collections "App ns=app\nproducers, processor" as App
+database "MongoDB\nca3.gpu_metrics / token_usage" as Mongo
+
+== Bootstrap k3s ==
+Hamzah -> Make: make bootstrap-k3s
+Make -> SSH: ssh 'bash -s' (bootstrap script)
+SSH -> CP: Install k3s server\n--tls-san PUB_IP/PRIV_IP\n--disable metrics-server\n--kubelet auth webhook
+CP -> CP: Write kubeconfig (external)
+CP -> API: Start control plane
+API -> Nodes: Register kubelets, schedule system pods
+
+== Provision Platform ==
+Hamzah -> API: kubectl apply -f platform/
+API -> Platform: create Kafka + MongoDB
+Platform -> Platform: Kafka listens 9092 (advertised.listeners)
+Platform -> Platform: Mongo ready (DB=ca3)
+
+== Provision App Layer ==
+Hamzah -> API: kubectl apply -f app/
+API -> App: create producers + processor
+App -> Platform: producers → Kafka (publish gpu.metrics.v1, token.usage.v1)
+App -> Platform: processor → Kafka (consume)
+App -> Mongo: processor → insert metrics, token usage docs
+
+== Verify Workflow ==
+Hamzah -> API: make verify-workflow
+API -> App: restart producers (nudge)
+App -> Platform: publish metrics to Kafka
+Platform -> Mongo: processor consumes, writes to DB
+Hamzah -> Mongo: check document deltas
+note right of Hamzah
+✅ gpu_metrics increased
+⚠️ token_usage may stay 0 if producer disabled
+end note
+
+== Troubleshooting ==
+Hamzah -> Platform: inspect Kafka svc/endpoints
+Platform -> App: processor reconnects once listeners align
+Hamzah -> API: kubectl logs / rollout status
+API -> App: confirm stable pipelines
+
+@enduml
