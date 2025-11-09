@@ -3,6 +3,12 @@ from fastapi import FastAPI
 from pymongo import MongoClient, ASCENDING
 from confluent_kafka import Consumer
 from collections import deque
+from fastapi import FastAPI
+from starlette_exporter import PrometheusMiddleware, handle_metrics
+
+app = FastAPI()
+app.add_middleware(PrometheusMiddleware)
+app.add_route("/metrics", handle_metrics)
 
 app = FastAPI()
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "10.0.1.10:9092")

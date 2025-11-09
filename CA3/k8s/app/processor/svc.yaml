@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: processor
   namespace: app
+  labels:
+    app: processor
 spec:
   selector: { app: processor }
   ports:
