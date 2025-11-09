@@ -10,7 +10,6 @@ app = FastAPI()
 app.add_middleware(PrometheusMiddleware)
 app.add_route("/metrics", handle_metrics)
 
-app = FastAPI()
 BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "10.0.1.10:9092")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://10.0.1.11:27017/ca0")
 PRICE = float(os.getenv("PRICE_PER_HOUR_USD", "0.85"))
