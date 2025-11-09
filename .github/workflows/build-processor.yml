@@ -16,7 +16,7 @@ jobs:
     env:
       IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/processor
       CONTEXT: ./CA0/vm3-processor
-      TAG: ca2
+      TAG: ca3
     steps:
       - uses: actions/checkout@v4
       - name: Set up Buildx

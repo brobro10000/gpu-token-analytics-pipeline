@@ -1,0 +1,64 @@
+@startuml CA3_Architecture
+title CA3 – Terraform + K3s on AWS (Deployment View)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam wrapWidth 200
+skinparam maxMessageSize 120
+
+rectangle "Admin Laptop" as ADMIN {
+  component "kubectl + Makefile\n(KUBECONFIG local)" as Kubectl
+  component "SSH Tunnel\n127.0.0.1:6443 -> cp:6443" as Tunnel
+}
+
+node "AWS VPC" as VPC {
+  frame "Security Groups" as SG {
+    rectangle "admin SG\nSSH (22) from your IP" as AdminSG
+    rectangle "k8s_nodes SG\n6443 (API), 10250 (kubelet)\nNodePorts/CNI internal" as K8sSG
+  }
+
+  node "Subnet" as SUB {
+    node "EC2: Control Plane" as CP {
+      component "K3s Server\nAPI :6443\ncoredns / metrics-server / traefik" as K3sCP
+      artifact "kubeconfig (remote)\n/etc/rancher/k3s/k3s.yaml\n~/kubeconfig-external.yaml" as KubeCfg
+    }
+
+    node "EC2: Worker 1" as W1 {
+      component "K3s Agent" as Agent1
+    }
+    node "EC2: Worker 2" as W2 {
+      component "K3s Agent" as Agent2
+    }
+
+    package "Kubernetes Cluster" as K8S {
+      package "Namespace: platform" as NS_PLATFORM {
+        component "Kafka (StatefulSet)\nHeadless Service: kafka" as Kafka
+        component "MongoDB (StatefulSet)\nService: mongo" as Mongo
+      }
+      package "Namespace: app" as NS_APP {
+        component "Processor (Deployment)\nService: processor" as Processor
+        component "Producers (Deployment/HPA)" as Producers
+      }
+    }
+  }
+}
+
+' --- Relationships ---
+Kubectl --> Tunnel : kubectl API calls\n(via localhost:6443)
+Tunnel --> K3sCP : forwards to :6443
+Kubectl ..> KubeCfg : uses
+
+K3sCP -down- Agent1
+K3sCP -down- Agent2
+
+Producers --> Kafka : publish
+Processor --> Kafka : consume
+Processor --> Mongo : write
+
+note right of SG
+admin SG: SSH(22) from your IP
+k8s_nodes SG: 6443/10250 internal
+Optional: 6443 from admin IP
+end note
+
+@enduml

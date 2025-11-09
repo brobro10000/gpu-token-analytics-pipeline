@@ -1,5 +1,5 @@
 # ------------------------------
-# CA2 root Makefile (run from /ca2)
+# CA3 root Makefile (run from /ca3)
 # Validates stack using PRIVATE IPs discovered from Terraform outputs
 # ------------------------------
 
@@ -63,7 +63,7 @@ ensure-kubeconfig:
 .PHONY: help print addrs env fix-key-perms ssh-kafka ssh-mongo ssh-processor ssh-producers ssh-control-plane ssh-worker1 ssh-worker2 bootstrap-k3s tunnel kubeconfig kubectl-test status clean-kubeconfig get-token join-worker-1 join-worker-2 join-workers K verify verify-kafka verify-mongo verify-processor verify-producers verify-workflow verify-preflight verify-mongo-cap verify-deltas verify-processor-api verify-scale-hpa deploy undeploy namespaces smoke ensure-tf ensure-kubeconfig put-key
 
 help:
-	@echo "CA2: cluster and validation helpers"
+	@echo "CA3: cluster and validation helpers"
 	@echo
 	@echo "Terraform/outputs:"
 	@echo "  make addrs                - Print private and public IPs from terraform outputs"
@@ -189,7 +189,7 @@ verify-producers:
 # --- Tunables ---
 NS_PLATFORM ?= platform
 NS_APP      ?= app
-DB_NAME     ?= ca2
+DB_NAME     ?= ca3
 WAIT_SEC    ?= 5
 MAX_DOCS    ?= 1000
 TOPIC_REGEX ?= '^(gpu\.metrics\.v1|token\.usage\.v1)$$'

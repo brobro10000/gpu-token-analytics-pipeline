@@ -1,0 +1,21 @@
+#cloud-config
+package_update: true
+write_files:
+  - path: /root/join.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      CP_IP="$${CONTROL_PLANE_IP}"
+      # fetch token from control-plane's temporary http server
+      for i in {1..60}; do
+        TOKEN=$(curl -s --connect-timeout 2 http://$${CONTROL_PLANE_IP}:8081/node-token || true)
+        if [ -n "$${TOKEN:-}" ]; then break; fi
+        sleep 2
+      done
+      if [ -z "$${TOKEN:-}" ]; then
+        echo "Failed to fetch k3s token"; exit 1
+      fi
+      curl -sfL https://get.k3s.io | K3S_URL="https://$${CP_IP}:6443" K3S_TOKEN="$${TOKEN}" sh -
+runcmd:
+  - /root/join.sh

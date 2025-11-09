@@ -3,7 +3,7 @@
 Meta
 - Date: 2025-08-29 03:58:24 UTC
 - User: @brobro10000
-- Context: Add ops features to CA2 diagram: observability, autoscaling, security, resilience.
+- Context: Add ops features to CA3 diagram: observability, autoscaling, security, resilience.
 
 Request
 - Incorporate Prometheus, Grafana, and logs collector; show HPA, NetworkPolicies, and PDBs; include Chaos component.

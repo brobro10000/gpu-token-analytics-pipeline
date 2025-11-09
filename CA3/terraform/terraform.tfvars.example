@@ -1,0 +1,35 @@
+# Example terraform.tfvars for CA3 environment
+# Copy this file to terraform.tfvars and adjust values for your AWS account
+# Tip: Lines starting with # are comments and can be left as-is.
+
+# A short name used as a prefix for most resources (VPC, SGs, instances)
+project_name = "ca3"
+
+# The AWS CLI profile to use for credentials
+# - Must exist in ~/.aws/credentials or be configured via `aws configure --profile <name>`
+aws_profile  = "terraform"
+
+# AWS region to deploy to (e.g., us-east-1, us-west-2, eu-central-1)
+aws_region   = "us-east-1"
+
+# Your EC2 Key Pair name in the selected region.
+# Create one in the AWS Console (EC2 -> Key Pairs) or import an existing public key.
+# Use `aws ec2 describe-key-pairs --profile <profile> --region <region>` to list.
+ssh_key_name = "your-keypair-name"
+
+# Your public IP in CIDR notation to restrict access to SSH/HTTP
+# Format must be x.x.x.x/32 for a single IP. Find your IP via https://ifconfig.me or similar.
+my_ip_cidr   = "1.2.3.4/32"
+
+# If true, instances are launched with public IPs for easier SSH from the internet.
+# If false, instances will be private-only (you will need a bastion or VPN).
+public_subnet = true
+
+# VPC and Subnet CIDRs. Adjust if these ranges conflict with your existing networks.
+# Defaults match variables.tf. Use non-overlapping RFC1918 ranges.
+vpc_cidr    = "10.0.0.0/16"
+subnet_cidr = "10.0.1.0/24"
+
+# Instance type for the four VMs (Kafka, Mongo, Processor, Producers)
+# Choose a size available in your region; t3a.medium is cost-effective for testing.
+instance_type = "t3a.medium"
