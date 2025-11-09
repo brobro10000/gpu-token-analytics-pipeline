@@ -511,8 +511,7 @@ deploy-all: ensure-tf
 	@$(MAKE) bootstrap-monitoring-prereqs
 
 	@echo "🔹 3) Creating namespaces & deploying platform + app workloads"
-	@KUBECONFIG=$(KUBECONFIGL) kubectl apply -R -f k8s/platform
-	@KUBECONFIG=$(KUBECONFIGL) kubectl apply -R -f k8s/app
+	@$(MAKE) deploy
 
 	@echo "🔹 4) Deploying monitoring stack (Prometheus + Grafana + Loki)"
 	@$(MAKE) deploy-monitoring
