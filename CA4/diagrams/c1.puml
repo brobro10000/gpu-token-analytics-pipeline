@@ -1,0 +1,50 @@
+@startuml CA4_High_Level_Dataflow
+
+title CA4 – High-Level Data Flow\nGPU -> Edge Processing -> Data Store -> Observability
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Arial
+skinparam wrapWidth 220
+skinparam maxMessageSize 140
+
+' -------------------------------------------------
+' ACTORS
+' -------------------------------------------------
+actor "Colab Notebook User" as COLAB_USER
+actor "Developer / Operator" as DEV_USER
+
+' -------------------------------------------------
+' SYSTEMS (HIGH-LEVEL)
+' -------------------------------------------------
+
+rectangle "Colab GPU Metadata Producer\n(Google Colab)" as COLAB_SYS
+
+rectangle "Edge Processing Platform\n(AWS VPC + K3s + Kafka + Worker)" as EDGE_PLATFORM
+
+rectangle "Data Platform\n(Managed Mongo-Compatible DB + S3)" as DATA_PLATFORM
+
+rectangle "Observability Platform\n(Prometheus + Loki + Grafana)" as OBS_PLATFORM
+
+' -------------------------------------------------
+' RELATIONSHIPS – DATA FLOW
+' -------------------------------------------------
+
+' User runs notebook
+COLAB_USER --> COLAB_SYS : Run GPU/TPU notebook\nand extraction code
+
+' Colab sends metadata into edge platform
+COLAB_SYS --> EDGE_PLATFORM : POST /metadata\n(JSON over HTTPS)
+
+' Edge platform streams and transforms
+EDGE_PLATFORM --> DATA_PLATFORM : Persist transformed\nmetadata and archives
+
+' Observability: metrics and logs
+EDGE_PLATFORM --> OBS_PLATFORM : Metrics + logs
+DATA_PLATFORM --> OBS_PLATFORM : DB metrics\n(optional)
+
+' Dev/ops interactions
+DEV_USER --> EDGE_PLATFORM : Deploy / manage\nvia bastion + kubectl
+DEV_USER --> OBS_PLATFORM : View dashboards\nand troubleshoot
+
+@enduml

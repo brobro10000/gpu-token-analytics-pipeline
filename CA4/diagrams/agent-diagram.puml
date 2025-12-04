@@ -1,0 +1,87 @@
+@startuml CA4_Agent_Implementation_Guide
+
+title CA4 – Agent Implementation Flow\n(Reusing CA3 Terraform Makefile and Diagrams)
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #222
+  LifeLineBorderColor #555
+  LifeLineBackgroundColor #f8f9fb
+  ParticipantBorderColor #333
+  ParticipantBackgroundColor #f3f6fa
+  BoxBorderColor #999
+  BoxBackgroundColor #ffffff
+}
+
+actor Agent as Agent
+participant "CA2/CA3 Repo\n(code + manifests)" as REPO
+participant "CA3 Terraform Makefile\n(ca3/terraform/Makefile)" as TF_MK
+participant "CA4 Architecture Diagram\n(architecture.puml)" as ARCH
+participant "CA4 Provisioning Diagram\n(CA4_Provisioning_Sequence.puml)" as SEQ
+participant "CA4 Terraform Config\n(ca4/terraform/)" as TF_CA4
+participant "CA4 Root Makefile\n(project Makefile)" as ROOT_MK
+participant "CA4 K8s Manifests\n(ca4/k8s/…)" as K8S_YAML
+participant "AWS Control Plane\n(VPC / EC2 / SG / DB / S3)" as AWS
+
+' --- 1) Understand Inputs & Constraints ---
+box "1) Understand Existing CA3 Infra Pattern"
+  Agent -> REPO : Open CA3 infra layout\n(ca3/terraform, ca3/k8s, scripts/)
+  Agent -> TF_MK : Inspect CA3 Terraform Makefile\n(AWS_PROFILE, AWS_REGION,\nMY_IP_CIDR, SSH_KEY_NAME,\nplan/apply/destroy/outputs)
+  Agent -> ARCH : Read CA4 architecture.puml\n(Colab -> Edge API -> Kafka -> Worker -> DB/S3)
+  Agent -> SEQ : Read CA4 provisioning sequence\n(Dev + Make + Terraform + K3s)
+end box
+
+' --- 2) Scaffold CA4 Terraform from CA3 Pattern ---
+box "2) Scaffold CA4 Terraform Using CA3 Pattern"
+  Agent -> TF_CA4 : Create ca4/terraform/ from CA3\ncopy modules/variables backend\nreuse VPC + EC2 + bastion patterns
+  Agent -> TF_CA4 : Define CA4-specific resources\n• Edge node group for K3s\n• Bastion host\n• Managed Mongo-compatible DB\n• S3 bucket for CA4 archives
+  Agent -> TF_CA4 : Wire variables & outputs\n(my_ip_cidr, ssh_key_name,\nca4_db_endpoint, ca4_s3_bucket)
+  Agent -> TF_MK : Copy CA3 targets\n(plan/apply/destroy/show/state)
+  Agent -> TF_MK : Add CA4 targets or\nnew Makefile in ca4/terraform/\nmirroring CA3 CLI pattern
+end box
+
+' --- 3) Wire CA4 Targets into Root Makefile ---
+box "3) Wire CA4 Targets into Root Makefile"
+  Agent -> ROOT_MK : Inspect CA3 targets\n(e.g., ca3-plan, ca3-apply,…)
+  Agent -> ROOT_MK : Add CA4 targets\nca4-plan, ca4-apply, ca4-destroy\nwrapping ca4/terraform Makefile
+  Agent -> ROOT_MK : Add CA4 K8s helpers\nca4-bootstrap-k3s\nca4-deploy-edge\nca4-deploy-monitoring\nca4-verify-*
+end box
+
+' --- 4) Define CA4 K8s Manifests (API + Kafka + Worker + Monitoring) ---
+box "4) Define CA4 K8s Manifests"
+  Agent -> REPO : Locate CA3 k8s manifests\n(platform: kafka/mongo\nmonitoring: prom+grafana+loki\napp: producers/processor)
+  Agent -> K8S_YAML : Create CA4 namespaces\nplatform, app, monitoring
+  Agent -> K8S_YAML : Create Processor API (Edge)\nDeployment + Service\nfollowing architecture.puml
+  Agent -> K8S_YAML : Reuse CA3 Kafka manifests\nas internal bus in CA4\n(topic gpu-metadata)
+  Agent -> K8S_YAML : Create Metadata Worker\nDeployment (Kafka consumer → DB/S3)
+  Agent -> K8S_YAML : Reuse/extend monitoring\nPrometheus, Loki, Grafana\nwith CA4 dashboards
+end box
+
+' --- 5) Hook K8s to Terraform Outputs ---
+box "5) Connect Infra Outputs to K8s Config"
+  Agent -> TF_CA4 : Ensure outputs for\nDB endpoint, S3 bucket,\nK3s API / node IPs
+  Agent -> K8S_YAML : Define Secrets/ConfigMaps\nca4-mongo-credentials\nca4-s3-config\nEDGE_API_URL (for Colab)
+  Agent -> ROOT_MK : Implement ca4-platform-setup\nkubectl apply namespaces,\nSecrets, ConfigMaps using TF outputs
+end box
+
+' --- 6) Implement Provisioning Flow for CA4 Targets ---
+box "6) Implement CA4 Provisioning Flow"
+  Agent -> ROOT_MK : Ensure workflow steps\n1) make ca4-plan / ca4-apply\n2) make ca4-bootstrap-k3s\n3) make ca4-platform-setup\n4) make ca4-deploy-edge\n5) make ca4-deploy-monitoring\n6) make ca4-verify-*
+  ROOT_MK -> AWS : Invoke Terraform\nvia ca4/terraform/Makefile\n(plan/apply with MY_IP_CIDR,\nSSH_KEY_NAME, etc.)
+end box
+
+' --- 7) Align Dev / Colab Contracts with Processor API ---
+box "7) Align Dev & Colab Contracts with API"
+  Agent -> REPO : Add CA4 Processor API app\n(local + edge versions)\n/health and /metadata endpoints
+  Agent -> REPO : Add Colab reference client\nEDGE_API_URL env\nPOST /metadata payload schema
+  Agent -> ROOT_MK : Add helpers for local dev\nca4-run-api-local\nca4-run-worker-local (optional)
+end box
+
+' --- 8) Final Agent Responsibilities Checklist ---
+box "8) Agent Checklist (Derived From Diagram)"
+  Agent -> Agent : Verify:\n- CA4 Terraform dir exists\n- CA4 Make targets added\n- K8s manifests for\n  API / Kafka / Worker / monitoring\n- Secrets/Config wired from TF outputs\n- Colab can call Processor API\n- E2E test: Colab → API → Kafka → Worker → DB/S3
+end box
+
+@enduml

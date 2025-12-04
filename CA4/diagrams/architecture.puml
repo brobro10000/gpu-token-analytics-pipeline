@@ -1,0 +1,108 @@
+@startuml CA4_Colab_AWS_VPC_Containers
+
+title CA4: Colab Producer -> Edge API -> Kafka -> Worker -> AWS DB
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+
+' -----------------------
+' GCP SITE (COLAB)
+' -----------------------
+package "GCP Project (Google Colab Site)" as GCP {
+  component "Colab Notebook Producer\n(GPU/TPU container)" as COLAB
+}
+
+rectangle "Raw Data Sources\n(images, logs, metrics)" as RAW
+
+' -----------------------
+' DEV WORKSTATION
+' -----------------------
+package "Admin / Dev Workstation" as DEV {
+  node "Dev Laptop" as DEV_LAPTOP {
+    component "Processor API (Local Dev)\nDocker container\nlocalhost:8000" as PROC_LOCAL
+    component "Terraform + Makefile" as MAKE
+    component "kubectl / kubeconfig" as KCTL
+  }
+}
+
+' -----------------------
+' AWS VPC
+' -----------------------
+package "AWS VPC (Core + Edge)" as AWS {
+
+  node "Bastion Host\nSSH Tunnel Endpoint" as BASTION
+
+  node "Edge Node Group\nEC2 instances running K3s" as EDGE_NODES {
+    node "Edge K3s Cluster" as K3S {
+      component "Processor API (Edge)\nK8s Deployment + Service" <<scales>> as PROC_EDGE
+      component "Kafka Brokers\nK8s StatefulSet\nTopic: gpu-metadata" <<scales>> as KAFKA
+      component "Metadata Processor Worker\nK8s Deployment\nKafka consumer" <<scales>> as WORKER
+      component "Promtail Agents\nK8s DaemonSet" as PROMTAIL
+    }
+  }
+
+  node "AWS Data Services" as DATA {
+    database "Managed Mongo-compatible DB\n(DocumentDB / Mongo Atlas in VPC)" as CORE_DB
+    storage "S3 Bucket\nRaw / enriched archives" as S3
+  }
+
+  node "Monitoring Stack (in K3s or ECS)" as MON {
+    component "Prometheus\nmetrics scrape" <<scales>> as PROM
+    component "Loki\nlog store" <<scales>> as LOKI
+    component "Grafana\ndashboards" <<scales>> as GRAFANA
+  }
+}
+
+' -----------------------
+' FLOWS
+' -----------------------
+
+' Raw data to Colab
+RAW --> COLAB : Load samples
+
+' Dev path: Colab -> local API
+COLAB --> PROC_LOCAL : POST /metadata\n(dev: http://localhost:8000)
+
+' Dev publishing: local API -> Kafka via SSH tunnel
+PROC_LOCAL --> KAFKA : Publish gpu-metadata\n(over SSH tunnel)
+DEV_LAPTOP --> BASTION : SSH tunnel to VPC\nlocal port -> Kafka brokers
+BASTION --> K3S : (via SGs / routing)\nforward to Kafka service
+
+' Production path: Colab -> Edge API in VPC
+COLAB --> PROC_EDGE : HTTPS POST /metadata\n(through ingress or VPN)
+
+' Edge internal pipeline (Option B only)
+PROC_EDGE --> KAFKA : Produce gpu-metadata events
+KAFKA --> WORKER : Consume gpu-metadata\nconsumer group: edge-worker
+WORKER --> CORE_DB : Write transformed docs\n(VPC internal connection)
+WORKER --> S3 : Optional archive of raw/enriched data
+
+' Admin operations
+MAKE --> BASTION : SSH then terraform apply\nprovision VPC / EC2 / K3s
+KCTL --> BASTION : SSH tunnel for kubectl\nand port-forward
+BASTION --> K3S : Access K3s API server\nand services
+
+' Observability
+PROC_EDGE --> PROM
+WORKER --> PROM
+KAFKA --> PROM
+CORE_DB --> PROM
+
+PROMTAIL --> LOKI
+PROC_EDGE --> LOKI
+WORKER --> LOKI
+KAFKA --> LOKI
+
+PROM --> GRAFANA
+LOKI --> GRAFANA
+
+' -----------------------
+' Legend
+' -----------------------
+legend left
+  <<scales>> = horizontally scalable containers
+               (Deployments or StatefulSets
+                managed by K3s / HPA)
+endlegend
+
+@enduml

@@ -1,0 +1,98 @@
+@startuml CA4_C4_Container_View
+
+title CA4 C4 Level 3 Container Diagram\nGPU -> API -> Kafka -> Worker -> DB and S3
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Arial
+skinparam wrapWidth 220
+skinparam maxMessageSize 140
+
+' -------------------------------------------------------------------
+' ACTORS
+' -------------------------------------------------------------------
+actor "Colab Notebook User" as COLAB_USER
+actor "Developer / Operator" as DEV_USER
+
+' -------------------------------------------------------------------
+' SYSTEM: GOOGLE COLAB
+' -------------------------------------------------------------------
+package "Google Cloud (Colab)" as GCP {
+  rectangle "Colab Notebook Producer\n(Python Notebook)" as COLAB_PRODUCER
+}
+
+' -------------------------------------------------------------------
+' SYSTEM: DEV MACHINE
+' -------------------------------------------------------------------
+package "Developer Machine" as DEV_HOST {
+  rectangle "Processor API (Local Dev)\nFastAPI / Python (Docker)\nlocalhost:8000" as PROC_LOCAL
+}
+
+' -------------------------------------------------------------------
+' SYSTEM: AWS VPC
+' -------------------------------------------------------------------
+package "AWS VPC - CA4 Infrastructure" as AWS_VPC {
+
+  rectangle "Bastion Host\nEC2 / SSH jumpbox" as BASTION
+
+  ' Edge K3s cluster
+  package "Edge K3s Cluster" as EDGE_K3S {
+    rectangle "Processor API (Edge)\nFastAPI / Python\nK3s Deployment + Service" as API_EDGE
+    rectangle "Kafka Cluster\nStatefulSet / Kafka\nTopic: gpu-metadata" as KAFKA
+    rectangle "Metadata Worker\nPython / K3s Deployment\nKafka consumer" as WORKER
+    rectangle "Promtail\nK3s DaemonSet\nLog collector" as PROMTAIL
+    rectangle "Prometheus\nK3s Deployment\nMetrics scraper" as PROM
+    rectangle "Loki\nK3s Deployment\nLog store" as LOKI
+    rectangle "Grafana\nK3s Deployment\nDashboards" as GRAFANA
+  }
+
+  ' Data services
+  rectangle "Managed Mongo-Compatible DB\n(AWS DocumentDB or Mongo Atlas)" as DB
+  rectangle "S3 Bucket\nRaw / enriched archives" as S3
+}
+
+' -------------------------------------------------------------------
+' RELATIONSHIPS: DATA FLOW
+' -------------------------------------------------------------------
+
+' Colab user runs notebook
+COLAB_USER --> COLAB_PRODUCER : Runs GPU/TPU notebook
+
+' Primary path: Colab -> Edge Processor API
+COLAB_PRODUCER --> API_EDGE : POST /metadata\n(JSON payload over HTTPS)
+
+' Dev-only path: Colab -> Local Processor API
+COLAB_PRODUCER --> PROC_LOCAL : Dev only:\nPOST /metadata\n(http://localhost:8000)
+
+' Local Processor API publishes to Kafka via bastion tunnel
+PROC_LOCAL --> KAFKA : Publish gpu-metadata\n(via SSH tunnel through bastion)
+
+' Edge Processor API publishes to Kafka
+API_EDGE --> KAFKA : Publish gpu-metadata\n(internal VPC network)
+
+' Worker consumes from Kafka
+KAFKA --> WORKER : Consume gpu-metadata\n(Kafka protocol)
+
+' Worker writes to DB and S3
+WORKER --> DB : Write transformed\nmetadata documents
+WORKER --> S3 : Optional: upload\nraw/enriched artifacts
+
+' Observability flows
+API_EDGE --> PROM : Expose /metrics
+WORKER --> PROM : Expose /metrics
+KAFKA --> PROM : Broker metrics\nvia exporter
+DB --> PROM : DB metrics\nvia exporter (optional)
+
+PROMTAIL --> LOKI : Ship pod logs
+API_EDGE --> PROMTAIL : Pod logs
+WORKER --> PROMTAIL : Pod logs
+KAFKA --> PROMTAIL : Pod logs
+
+PROM --> GRAFANA : Metrics datasource
+LOKI --> GRAFANA : Logs datasource
+
+' Dev access
+DEV_USER --> BASTION : SSH tunnel\nssh -L ...
+DEV_USER --> GRAFANA : View dashboards\nvia local tunnel\nhttp://localhost:3000
+
+@enduml

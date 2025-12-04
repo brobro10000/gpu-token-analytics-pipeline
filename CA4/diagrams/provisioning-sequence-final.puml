@@ -1,0 +1,118 @@
+@startuml CA4_Provisioning_Sequence
+title CA4 Provisioning — From AWS Infra to Multi-Cloud Pipeline
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName Inter
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #222222
+  LifeLineBorderColor #555555
+  LifeLineBackgroundColor #F8F9FB
+  ParticipantBorderColor #333333
+  ParticipantBackgroundColor #F3F6FA
+  BoxBorderColor #999999
+  BoxBackgroundColor #FFFFFF
+}
+
+actor Dev as Dev
+participant "Makefile + Terraform\n(local)" as TF
+participant "AWS Control Plane\nVPC / EC2 / SG / Subnets" as AWS
+participant "Bastion Host\nSSH Jumpbox" as BAST
+participant "K3s Cluster\n(Edge Node Group on EC2)" as K3S
+participant "Processor API\n(Edge Deployment)" as PROC
+participant "Kafka\n(Edge StatefulSet)" as KAFKA
+participant "Metadata Worker\n(Edge Deployment)" as WORKER
+participant "AWS Data Services\nMongo-compatible DB / S3" as DATA
+participant "Monitoring Stack\nPrometheus / Loki / Grafana" as MON
+participant "Colab Notebook\nGPU/TPU Producer" as COLAB
+
+' --- 1) AWS VPC + Edge Nodes + Data Services ---
+box "1) AWS VPC + Edge Nodes + Data Services"
+  Dev -> TF : make ca4-plan / make ca4-apply\n(provision CA4 AWS infra)
+  TF -> AWS : Create VPC, subnets,\nIGW/NAT, route tables, SGs
+  TF -> AWS : Create edge EC2 node group\n(with K3s user-data / cloud-init)
+  TF -> AWS : Create Bastion Host\n(in public subnet)
+  TF -> DATA : Provision managed Mongo-compatible DB\n(DocumentDB / Atlas in VPC)
+  TF -> DATA : Create S3 bucket\nfor raw/enriched archives
+end box
+
+' --- 2) Bootstrap K3s on Edge Nodes ---
+box "2) Bootstrap K3s on Edge Nodes"
+  Dev -> BAST : ssh bastion\n(jump into VPC)
+  Dev -> K3S : run bootstrap-k3s.sh\nor make ca4-bootstrap-k3s
+  K3S -> K3S : Install K3s server/agent\nconfigure API (port 6443)
+  K3S --> Dev : kubeconfig-ca4.yaml\n(downloaded to dev laptop)
+end box
+
+' --- 3) Namespaces, Secrets, and Base Platform ---
+box "3) Namespaces, Secrets, and Base Platform"
+  Dev -> K3S : make ca4-platform-setup\n(kubectl apply -f platform.yaml)
+  K3S -> K3S : Create namespaces\nplatform / app / monitoring
+  Dev -> K3S : kubectl apply\nDB connection Secrets / ConfigMaps\nColab API URL / tokens
+end box
+
+' --- 4) Deploy Edge Workloads (API + Kafka + Worker) ---
+box "4) Deploy Edge Workloads — API, Kafka, Worker"
+  Dev -> K3S : make ca4-deploy-edge\n(Processor API, Kafka, Worker)
+  K3S -> PROC : Deploy Processor API\nDeployment + Service
+  K3S -> KAFKA : Deploy Kafka StatefulSet\nand ClusterIP / Headless Service
+  K3S -> WORKER : Deploy Metadata Worker\nKafka consumer Deployment
+  WORKER -> DATA : Smoke-test DB connection\n(simple read/write)
+end box
+
+' --- 5) Deploy Monitoring Stack ---
+box "5) Deploy Monitoring Stack"
+  Dev -> K3S : make ca4-deploy-monitoring\n(Prometheus, Loki, Grafana, Promtail)
+  K3S -> MON : Deploy Prometheus\nwith ServiceMonitors
+  K3S -> MON : Deploy Loki + Promtail\nfor pod logs
+  K3S -> MON : Deploy Grafana\nwith CA4 dashboards
+end box
+
+' --- 6) Bastion Tunnels for Admin / Dev ---
+box "6) Configure Bastion Tunnels for Admin / Dev"
+  Dev -> BAST : ssh -L 16443:K3sAPI:6443\n(kubectl access)
+  Dev -> BAST : ssh -L 19092:KafkaSvc:9092\n(local access to Kafka)
+  Dev -> BAST : ssh -L 3000:Grafana:3000\n(optional local Grafana)
+  BAST --> K3S : Forward traffic to\nK3s API / Kafka / Grafana\nvia security groups
+end box
+
+' --- 7) Colab Producer Setup ---
+box "7) Colab Producer Setup"
+  Dev -> COLAB : Open CA4 Colab notebook\nset EDGE_API_URL env var
+  COLAB -> PROC : POST /health\n(test edge API over ingress / VPN)
+  PROC --> COLAB : 200 OK\n(API reachable from Colab)
+end box
+
+' --- 8) Preflight / Infra Verification ---
+box "8) Preflight / Infra Verification"
+  Dev -> K3S : make ca4-verify-preflight\n(nodes Ready, pods Running)
+  K3S --> Dev : OK or failures\n(kubectl get nodes/pods)
+
+  Dev -> KAFKA : make ca4-verify-kafka\n(list topics, check brokers)
+  KAFKA --> Dev : gpu-metadata topic exists\nbrokers Ready
+
+  Dev -> DATA : make ca4-verify-db\n(health check / ping)
+  DATA --> Dev : DB reachable from cluster\ncredentials valid
+end box
+
+' --- 9) E2E Flow: Colab -> API -> Kafka -> Worker -> DB/S3 ---
+box "9) E2E Flow — Colab → Edge → DB/S3"
+  Dev -> COLAB : Run "test_batch" notebook cell\n(send sample metadata)
+  COLAB -> PROC : POST /metadata\n(batch JSON payload)
+  PROC -> KAFKA : Publish gpu-metadata messages\n(topic: gpu-metadata)
+  KAFKA -> WORKER : Deliver messages\n(consumer group: edge-worker)
+  WORKER -> DATA : Upsert transformed docs\ninto metadata collection
+  WORKER -> DATA : Optional upload of raw/enriched\nartifacts to S3 bucket
+  DATA --> Dev : Document counts increased\n(expected delta in CA4 verify)
+end box
+
+' --- 10) Monitoring Sanity Check ---
+box "10) Monitoring and Logs Sanity"
+  Dev -> MON : Open Grafana via tunnel\n(http://localhost:3000)
+  MON --> Dev : CA4 dashboards\n(Processor API, Kafka, Worker, DB)
+
+  Dev -> MON : Query Loki for CA4 pods\n(processor, worker, Kafka)
+  MON --> Dev : Logs show Colab requests,\nKafka events, DB writes\n(no errors)
+end box
+
+@enduml
