@@ -1,0 +1,124 @@
+@startuml CA4_Updated_Architecture
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Inter
+skinparam wrapWidth 220
+skinparam maxMessageSize 140
+
+title CA4 – Multi-Cloud GPU → API → Kafka → Worker Architecture\n(Updated with ngrok + Bastion Tunneling)
+
+' ==========================================================
+' GOOGLE COLAB (GCP) – GPU METADATA PRODUCER
+' ==========================================================
+cloud "Google Colab (GCP)\nGPU/TPU Runtime" as COLAB {
+  component "Colab Notebook Producer\n• Extract GPU embeddings\n• Add GPU hardware metadata\n• POST /metadata" as PRODUCER
+}
+
+rectangle "Raw Data\n(images, logs, files)" as RAW
+RAW --> PRODUCER : Load / preprocess
+
+' ==========================================================
+' LOCAL DEVELOPMENT ENVIRONMENT
+' ==========================================================
+package "Local Dev Machine" as DEV {
+
+  component "Processor API (Local)\nFastAPI @ localhost:8000\nReceives metadata\nPublishes to Kafka over SSH tunnel" as PROC_LOCAL
+
+  component "ngrok Tunnel\nExposes local API as HTTPS\nfor Colab ingestion" as NGROK
+
+  PRODUCER --> NGROK : POST /metadata\n(HTTPS)
+  NGROK --> PROC_LOCAL : Forward request\n(localhost:8000)
+}
+
+' ==========================================================
+' AWS VPC (PRODUCTION + DEV TUNNEL TARGET)
+' ==========================================================
+package "AWS VPC – CA4 Infrastructure" as AWS {
+
+  node "Bastion Host\nSSH Jumpbox" as BASTION
+
+  ' ------------------------
+  ' EDGE K3s CLUSTER (PROD)
+  ' ------------------------
+  node "Edge Node Group (EC2)\nK3s Cluster" as K3S {
+
+    component "Processor API (Edge)\nFastAPI Deployment + Service" as PROC_EDGE
+
+    component "Kafka Cluster\nStatefulSet (3 brokers)\nTopic: gpu-metadata" as KAFKA
+
+    component "Metadata Worker\nKafka Consumer\nTransforms & writes to storage" as WORKER
+
+    component "Promtail\nLog Collector" as PROMTAIL
+  }
+
+  ' ------------------------
+  ' DATA SERVICES
+  ' ------------------------
+  node "AWS Data Layer" as DATALAYER {
+    database "DocumentDB / Mongo Atlas\n(metadata store)" as DB
+    storage "S3 Bucket\n(raw/enriched archives)" as S3
+  }
+
+  ' ------------------------
+  ' OBSERVABILITY
+  ' ------------------------
+  node "Monitoring Stack" as MON {
+      component "Prometheus\n(Metrics)" as PROM
+      component "Loki\n(Logs)" as LOKI
+      component "Grafana\n(Dashboards)" as GRAFANA
+  }
+}
+
+' ==========================================================
+' DATA FLOW + CONNECTIVITY
+' ==========================================================
+
+' --- DEV FLOW: COLAB → NGROK → LOCAL API → KAFKA VIA SSH ---
+PRODUCER --> NGROK : POST /metadata (HTTPS)
+NGROK --> PROC_LOCAL : Forwarded request
+
+PROC_LOCAL --> BASTION : SSH Tunnel
+BASTION --> KAFKA : Forward port 9092\n(localhost:9092 → kafka:9092)
+
+PROC_LOCAL --> KAFKA : Produce gpu-metadata event\n(via SSH tunnel)
+
+' --- PROD FLOW: COLAB → EDGE API DIRECTLY ---
+PRODUCER --> PROC_EDGE : POST /metadata (HTTPS ingress / VPN)
+
+' --- COMMON PIPELINE ---
+PROC_EDGE --> KAFKA : Produce gpu-metadata event
+
+KAFKA --> WORKER : Consume gpu-metadata\n(Consumer group: ca4-workers)
+
+WORKER --> DB : Write transformed metadata docs
+WORKER --> S3 : Optional archival output
+
+' --- OBSERVABILITY ---
+PROC_EDGE --> PROM : /metrics
+WORKER --> PROM
+KAFKA --> PROM
+DB --> PROM : DB exporter
+
+PROMTAIL --> LOKI : pod logs
+LOKI --> GRAFANA
+PROM --> GRAFANA
+
+' --- DEV OBSERVABILITY ACCESS ---
+DEV --> BASTION : SSH Tunnel\n(kubectl, grafana port-forward)
+DEV --> GRAFANA : http://localhost:3000\nvia SSH tunnel
+
+' ==========================================================
+' LEGEND
+' ==========================================================
+legend left
+  == Legend ==
+  Blue → Prod AWS VPC Components
+  Gray → Local Dev Components
+  Orange → ngrok / Tunneling
+  Green → GPU metadata producer
+  Arrows represent network paths:
+    • Dev: Colab → ngrok → local → SSH → Kafka
+    • Prod: Colab → Edge API → Kafka
+endlegend
+
+@enduml

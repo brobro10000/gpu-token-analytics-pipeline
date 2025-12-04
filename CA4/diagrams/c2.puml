@@ -1,0 +1,71 @@
+@startuml CA4_C2_Container_Diagram
+
+title CA4 – C4 Level 2 Container Diagram\nEdge Processing System (API + Kafka + Worker)
+
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam defaultFontName Arial
+skinparam wrapWidth 220
+skinparam maxMessageSize 140
+
+' -------------------------------------------------
+' ACTORS
+' -------------------------------------------------
+actor "Colab Notebook User" as COLAB_USER
+actor "Developer / Operator" as DEV_USER
+
+' -------------------------------------------------
+' EXTERNAL SYSTEMS
+' -------------------------------------------------
+rectangle "Colab GPU Metadata Producer\n(Google Colab System)" as COLAB_SYS
+
+rectangle "Data Platform\n(Managed Mongo-Compatible DB + S3)" as DATA_PLATFORM
+
+rectangle "Observability Platform\n(Prometheus + Loki + Grafana)" as OBS_PLATFORM
+
+' -------------------------------------------------
+' SYSTEM UNDER DESIGN: CA4 EDGE PROCESSING SYSTEM
+' -------------------------------------------------
+package "CA4 Edge Processing System\n(AWS VPC + K3s + Kafka + Worker)" as CA4_SYS {
+
+  rectangle "Processor API (Edge)\nFastAPI / Python\nK3s Deployment + Service" as API_EDGE
+
+  rectangle "Kafka Cluster\nApache Kafka\nK3s StatefulSet\nTopic: gpu-metadata" as KAFKA
+
+  rectangle "Metadata Worker\nPython Service\nK3s Deployment\nKafka Consumer" as WORKER
+
+  rectangle "Bastion Host\nEC2 / SSH Jumpbox\nTunnels to K3s, Kafka, Grafana" as BASTION
+
+  ' optional: represent K3s as infra container
+  rectangle "K3s Control Plane\nKubernetes API\nEdge Node Group" as K3S_CTRL
+}
+
+' -------------------------------------------------
+' RELATIONSHIPS – DATA FLOW AND CONTROL
+' -------------------------------------------------
+
+' User -> Colab system
+COLAB_USER --> COLAB_SYS : Run GPU/TPU notebook\nand metadata extraction code
+
+' Colab -> CA4 system
+COLAB_SYS --> API_EDGE : POST /metadata\n(JSON over HTTPS)
+
+' API -> Kafka inside CA4 system
+API_EDGE --> KAFKA : Publish gpu-metadata\n(events)
+
+' Worker -> Kafka
+KAFKA --> WORKER : Consume gpu-metadata\n(Kafka protocol)
+
+' CA4 system -> Data Platform
+WORKER --> DATA_PLATFORM : Write transformed metadata\nto DB and archives to S3
+
+' Observability flows (high level)
+CA4_SYS --> OBS_PLATFORM : Metrics and logs\n(API, Kafka, Worker, DB exporters)
+
+' Dev / operator control interactions
+DEV_USER --> BASTION : SSH tunnel\nssh -L ...
+BASTION --> K3S_CTRL : Access K3s API\n(kubectl, deployments)
+BASTION --> KAFKA : Access Kafka brokers\n(for debugging, topic inspection)
+DEV_USER --> OBS_PLATFORM : View dashboards\nvia tunneled Grafana access
+
+@enduml
