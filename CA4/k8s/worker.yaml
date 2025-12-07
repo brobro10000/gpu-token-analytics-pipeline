@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ca4-gpu-worker
+  name: worker
   namespace: platform
   labels:
-    app: ca4-gpu-worker
+    app: worker
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ca4-gpu-worker
+      app: worker
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -18,14 +18,11 @@ spec:
   template:
     metadata:
       labels:
-        app: ca4-gpu-worker
+        app: worker
     spec:
-      imagePullSecrets:
-        # If your GHCR repo is PUBLIC, you can remove these two lines.
-        - name: ghcr-secret
       containers:
         - name: worker
-          image: ghcr.io/brobro10000/ca4-gpu-worker:latest
+          image: ghcr.io/brobro10000/worker:latest
           imagePullPolicy: Always
           env:
             - name: KAFKA_BOOTSTRAP
