@@ -11,7 +11,7 @@ KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "gpu-metadata")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo.platform.svc.cluster.local:27017")
 MONGO_DB = os.getenv("MONGO_DB", "ca4")
-MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "gpu-metadata")
+MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "gpu_metadata")
 
 print(f"[worker] Starting CA4 worker…")
 print(f"[worker] Kafka: {KAFKA_BOOTSTRAP}, topic={KAFKA_TOPIC}")
