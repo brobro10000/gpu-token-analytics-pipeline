@@ -32,6 +32,6 @@ spec:
               echo "[create] topics (idempotent)"
               /usr/bin/kafka-topics --create --if-not-exists --topic gpu.metrics.v1  --partitions 1 --replication-factor 1 --bootstrap-server "$BS" || true
               /usr/bin/kafka-topics --create --if-not-exists --topic token.usage.v1 --partitions 1 --replication-factor 1 --bootstrap-server "$BS" || true
-
+              /usr/bin/kafka-topics --create --if-not-exists --topic gpu_metadata --partitions 1 --replication-factor 1 --bootstrap-server "$BS" || true
               echo "[list]"
               /usr/bin/kafka-topics --bootstrap-server "$BS" --list

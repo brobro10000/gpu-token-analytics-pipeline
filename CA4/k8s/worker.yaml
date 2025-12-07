@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ca4-gpu-worker
+  namespace: platform
+  labels:
+    app: ca4-gpu-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ca4-gpu-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ca4-gpu-worker
+    spec:
+      imagePullSecrets:
+        # If your GHCR repo is PUBLIC, you can remove these two lines.
+        - name: ghcr-secret
+      containers:
+        - name: worker
+          image: ghcr.io/brobro10000/ca4-gpu-worker:latest
+          imagePullPolicy: Always
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "kafka.platform.svc.cluster.local:9092"
+
+            - name: KAFKA_TOPIC
+              value: "gpu-metadata"
+
+            - name: MONGO_URI
+              value: "mongodb://mongo.platform.svc.cluster.local:27017"
+
+            - name: MONGO_DB
+              value: "ca4"
+
+            - name: MONGO_COLLECTION
+              value: "gpu_metadata"
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+      restartPolicy: Always
