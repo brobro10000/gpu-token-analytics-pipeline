@@ -1,6 +1,6 @@
 @startuml CA4_High_Level_Dataflow
 
-title CA4 – High-Level Data Flow\nGPU -> Edge Processing -> Data Store -> Observability
+title CA4 – High-Level Data Flow\nGPU → Local Processor → Kafka/Worker → Data Store → Observability
 
 skinparam shadowing false
 skinparam componentStyle rectangle
@@ -20,9 +20,9 @@ actor "Developer / Operator" as DEV_USER
 
 rectangle "Colab GPU Metadata Producer\n(Google Colab)" as COLAB_SYS
 
-rectangle "Edge Processing Platform\n(AWS VPC + K3s + Kafka + Worker)" as EDGE_PLATFORM
+rectangle "Ingestion & Edge Processing Platform\nLocal Processor (Laptop) + AWS VPC\n(K3s + Kafka + Worker)" as EDGE_PLATFORM
 
-rectangle "Data Platform\n(Managed Mongo-Compatible DB + S3)" as DATA_PLATFORM
+rectangle "Data Platform\nMongo (DB=ca4, coll=gpu_metadata)\n+ Optional S3 Archive" as DATA_PLATFORM
 
 rectangle "Observability Platform\n(Prometheus + Loki + Grafana)" as OBS_PLATFORM
 
@@ -34,17 +34,17 @@ rectangle "Observability Platform\n(Prometheus + Loki + Grafana)" as OBS_PLATFOR
 COLAB_USER --> COLAB_SYS : Run GPU/TPU notebook\nand extraction code
 
 ' Colab sends metadata into edge platform
-COLAB_SYS --> EDGE_PLATFORM : POST /metadata\n(JSON over HTTPS)
+COLAB_SYS --> EDGE_PLATFORM : POST /metadata\nJSON over HTTPS\n(dev: via ngrok tunnel)
 
 ' Edge platform streams and transforms
-EDGE_PLATFORM --> DATA_PLATFORM : Persist transformed\nmetadata and archives
+EDGE_PLATFORM --> DATA_PLATFORM : Persist transformed\nGPU metadata documents
 
 ' Observability: metrics and logs
-EDGE_PLATFORM --> OBS_PLATFORM : Metrics + logs
-DATA_PLATFORM --> OBS_PLATFORM : DB metrics\n(optional)
+EDGE_PLATFORM --> OBS_PLATFORM : Metrics + logs\n(Processor, Kafka, Worker)
+DATA_PLATFORM --> OBS_PLATFORM : DB metrics\n(optional exporters)
 
 ' Dev/ops interactions
-DEV_USER --> EDGE_PLATFORM : Deploy / manage\nvia bastion + kubectl
-DEV_USER --> OBS_PLATFORM : View dashboards\nand troubleshoot
+DEV_USER --> EDGE_PLATFORM : Manage local Processor\nand AWS K3s via bastion + kubectl
+DEV_USER --> OBS_PLATFORM : View dashboards\nand troubleshoot pipeline
 
 @enduml
