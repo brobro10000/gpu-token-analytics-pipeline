@@ -5,7 +5,7 @@ skinparam defaultFontName Inter
 skinparam wrapWidth 220
 skinparam maxMessageSize 140
 
-title CA4 – Multi-Cloud GPU → API → Kafka → Worker Architecture
+title CA4 – Multi-Cloud GPU → Local Processor → Kafka → Worker Architecture
 
 ' ==========================================================
 ' GOOGLE COLAB (GCP) – GPU METADATA PRODUCER
@@ -22,41 +22,42 @@ RAW --> PRODUCER : Load / preprocess
 ' ==========================================================
 package "Local Dev Machine" as DEV {
 
-  component "Processor API (Local)\nFastAPI @ localhost:8000\nReceives metadata\nPublishes to Kafka over SSH tunnel" as PROC_LOCAL
+  component "Processor API (Local)\nFastAPI @ localhost:8000\nReceives /metadata JSON\nPublishes to Kafka via SSH + port-forward" as PROC_LOCAL
 
-  component "ngrok Tunnel\nExposes local API as HTTPS\nfor Colab ingestion" as NGROK
+  component "ngrok Tunnel\nPublic HTTPS → localhost:8000\nfor Colab ingestion" as NGROK
 
   PRODUCER --> NGROK : POST /metadata\n(HTTPS)
   NGROK --> PROC_LOCAL : Forward request\n(localhost:8000)
 }
 
 ' ==========================================================
-' AWS VPC (PRODUCTION + DEV TUNNEL TARGET)
+' AWS VPC (PRODUCTION SITE + DEV TUNNEL TARGET)
 ' ==========================================================
 package "AWS VPC – CA4 Infrastructure" as AWS {
 
-  node "Bastion Host\nSSH Jumpbox" as BASTION
+  node "Bastion Host\nSSH Jumpbox\nOnly public entrypoint" as BASTION
 
   ' ------------------------
-  ' EDGE K3s CLUSTER (PROD)
+  ' EDGE K3s CLUSTER
   ' ------------------------
   node "Edge Node Group (EC2)\nK3s Cluster" as K3S {
 
-    component "Processor API (Edge)\nFastAPI Deployment + Service" as PROC_EDGE
+    ' NOTE: Edge Processor is a future deployment option.
+    component "Processor API (Edge – optional)\nFastAPI Deployment + Service\n(Not deployed in current CA4)\n\nFuture: remove ngrok & local tunneling" as PROC_EDGE <<future>>
 
-    component "Kafka Cluster\nStatefulSet (3 brokers)\nTopic: gpu-metadata" as KAFKA
+    component "Kafka Cluster\nK3s StatefulSet (1 broker)\nTopic: gpu-metadata" as KAFKA
 
-    component "Metadata Worker\nKafka Consumer\nTransforms & writes to storage" as WORKER
+    component "Worker Deployment (app=worker)\nKafka Consumer (gpu-metadata)\nTransforms & writes to ca4.gpu_metadata" as WORKER
 
-    component "Promtail\nLog Collector" as PROMTAIL
+    component "Promtail\nPod Log Collector" as PROMTAIL
   }
 
   ' ------------------------
   ' DATA SERVICES
   ' ------------------------
   node "AWS Data Layer" as DATALAYER {
-    database "DocumentDB / Mongo Atlas\n(metadata store)" as DB
-    storage "S3 Bucket\n(raw/enriched archives)" as S3
+    database "DocumentDB / Mongo\nDB: ca4\nCollection: gpu_metadata" as DB
+    storage "S3 Bucket (optional)\nFuture archival of raw/enriched docs" as S3
   }
 
   ' ------------------------
@@ -73,52 +74,51 @@ package "AWS VPC – CA4 Infrastructure" as AWS {
 ' DATA FLOW + CONNECTIVITY
 ' ==========================================================
 
-' --- DEV FLOW: COLAB → NGROK → LOCAL API → KAFKA VIA SSH ---
+' --- DEV FLOW: COLAB → NGROK → LOCAL PROCESSOR → KAFKA VIA BASTION ---
 PRODUCER --> NGROK : POST /metadata (HTTPS)
-NGROK --> PROC_LOCAL : Forwarded request
+NGROK --> PROC_LOCAL : Forwarded request\n(localhost:8000)
 
-PROC_LOCAL --> BASTION : SSH Tunnel
-BASTION --> KAFKA : Forward port 9092\n(localhost:9092 → kafka:9092)
+PROC_LOCAL --> BASTION : SSH Tunnel\n(Developer → Bastion)
+BASTION --> KAFKA : TCP 9092 inside VPC\n(kubectl port-forward svc/kafka)
 
-PROC_LOCAL --> KAFKA : Produce gpu-metadata event\n(via SSH tunnel)
+PROC_LOCAL --> KAFKA : Produce gpu-metadata event\nbootstrap=localhost:9092
 
-' --- PROD FLOW: COLAB → EDGE API DIRECTLY ---
-PRODUCER --> PROC_EDGE : POST /metadata (HTTPS ingress / VPN)
+' --- FUTURE PROD FLOW: COLAB → EDGE API DIRECTLY (NO NGROK/LOCAL) ---
+PRODUCER --> PROC_EDGE : (Future) POST /metadata\n(VPN / Ingress)
+PROC_EDGE --> KAFKA : (Future) Produce gpu-metadata event\nin-cluster
 
-' --- COMMON PIPELINE ---
-PROC_EDGE --> KAFKA : Produce gpu-metadata event
-
-KAFKA --> WORKER : Consume gpu-metadata\n(Consumer group: ca4-workers)
-
-WORKER --> DB : Write transformed metadata docs
-WORKER --> S3 : Optional archival output
+' --- COMMON BACK-END PIPELINE (CURRENT IMPLEMENTATION) ---
+KAFKA --> WORKER : Consume gpu-metadata\nConsumer group: worker
+WORKER --> DB : Write transformed metadata docs\nDB=ca4, coll=gpu_metadata
+WORKER --> S3 : Optional archival output\n(future extension)
 
 ' --- OBSERVABILITY ---
-PROC_EDGE --> PROM : /metrics
-WORKER --> PROM
-KAFKA --> PROM
+PROC_LOCAL --> PROM : /metrics (local dev scraping, optional)
+PROC_EDGE --> PROM : /metrics (future, in-cluster)
+WORKER --> PROM : /metrics endpoint (if enabled)
+KAFKA --> PROM : Kafka exporter
 DB --> PROM : DB exporter
 
-PROMTAIL --> LOKI : pod logs
+PROMTAIL --> LOKI : Pod logs from K3s
 LOKI --> GRAFANA
 PROM --> GRAFANA
 
 ' --- DEV OBSERVABILITY ACCESS ---
-DEV --> BASTION : SSH Tunnel\n(kubectl, grafana port-forward)
-DEV --> GRAFANA : http://localhost:3000\nvia SSH tunnel
+DEV --> BASTION : SSH + kubectl\n(k8s API, port-forward)
+DEV --> GRAFANA : http://localhost:3000\nvia SSH + port-forward
 
 ' ==========================================================
 ' LEGEND
 ' ==========================================================
 legend left
   == Legend ==
-  Blue → Prod AWS VPC Components
-  Gray → Local Dev Components
-  Orange → ngrok / Tunneling
-  Green → GPU metadata producer
-  Arrows represent network paths:
-    • Dev: Colab → ngrok → local → SSH → Kafka
-    • Prod: Colab → Edge API → Kafka
+  Blue  → AWS VPC / K3s Components
+  Gray  → Local Dev Components (Laptop)
+  Green → GPU metadata producer (Colab)
+  Orange → Tunneling / Ingress (ngrok, SSH)
+
+  Solid arrows = Implemented in current CA4
+  Dotted arrows / <<future>> = Optional future deployment
 endlegend
 
 @enduml

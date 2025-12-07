@@ -1,184 +1,289 @@
-# Architecture — CA4
+# **CA4 Architecture**
 
-**(Colab GPU Producer + Edge K3s + Kafka + Worker + AWS VPC DB + S3 + Bastion)**
+*(Colab GPU Producer → Local Processor API → Kafka (K3s) → Worker → AWS DB/S3)*
 
-## Executive Summary
 
-| Choice                                         | Why We Chose It                                                          | Pros                                                              | Cons / Risks                                                 | Future Scale Path                                          |
-| ---------------------------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------- |
-| **Colab GPU/TPU as Producer**                  | Offload heavy metadata extraction to free/low-cost accelerators          | Simple developer UX; no GPU infra to manage; fast iterations      | Ephemeral runtime; unstable network; limited SLA             | Move GPU pipeline to EKS node group, ECS GPU, or SageMaker |
-| **K3s on EC2 (Edge Node Group)**               | Continue CA2/CA3 lineage with lightweight, self-managed k8s              | Low control-plane overhead; predictable; strong educational value | Ops-heavy: upgrades, failure recovery, node lifecycle        | Migrate to EKS with managed control plane + autoscaler     |
-| **Processor API → Kafka (Option B only)**      | Clean contract between cloud producer & edge; keeps lineage from CA2/CA3 | Replay, buffering, decoupled scaling, event-driven                | Kafka STS still requires ops tuning; single cluster boundary | Move Kafka to MSK; partition topics; multi-broker KRaft    |
-| **Worker (Kafka Consumer) → Managed Mongo DB** | Shifts durability to AWS while keeping transformations at edge           | Reliable persistence; multi-AZ; integrates with analytics         | DocumentDB vs Mongo differences; VPC access only             | Real Mongo Atlas cluster; multi-region replication         |
-| **Bastion Host + SSH Tunnels**                 | Clear security boundary; avoids exposing Kafka/K3s endpoints             | No public control plane; keeps blast radius small                 | Manual tunneling; single operational choke-point             | Replace with SSM Session Manager or WireGuard              |
-| **S3 Archive (Optional)**                      | Cheap data lake for raw/enriched metadata                                | Enables future ML retraining; ETL integration                     | Must manage lifecycle policies and access controls           | Mature into Glue/Athena + LakeFormation                    |
-| **Prometheus + Loki + Grafana**                | Same observability stack as CA3; easy reuse                              | Familiar dashboards/logs; introspection of pipeline               | Retention limits; storage growth; manual scaling             | Add Thanos + S3 backend; managed Grafana Cloud             |
+## **Executive Summary**
 
----
+CA4 integrates **multi-cloud compute**, **edge Kubernetes**, **event streaming**, and **managed cloud storage** into a unified processing pipeline.
+The final architecture is:
 
-## Goals & Assumptions
+| Component                 | Location                      | Role                                                                  |
+| ------------------------- | ----------------------------- | --------------------------------------------------------------------- |
+| **Colab GPU Producer**    | Google Colab (GCP)            | Extract embeddings + GPU hardware metadata; POSTs to Processor API    |
+| **Processor API (Local)** | Developer Laptop              | Validates metadata, publishes events to Kafka via SSH port-forward    |
+| **Kafka Broker**          | AWS VPC → K3s                 | Durable event backbone (`gpu-metadata`)                               |
+| **Worker Service**        | AWS VPC → K3s                 | Consumes Kafka events; writes transformed docs to Mongo-compatible DB |
+| **Database**              | AWS DocumentDB or Mongo Atlas | Stores structured metadata documents (collection: `ca4.gpu_metadata`) |
+| **S3 Archive (optional)** | AWS                           | Long-term storage for raw or enriched metadata                        |
+| **Bastion Host**          | AWS VPC                       | Single secure access point for Kafka, K3s, and Grafana                |
+| **Monitoring Stack**      | K3s                           | Prometheus, Loki, Grafana for metrics and logs                        |
 
-* Extend CA3 into a **realistic cross-cloud pipeline**:
-  **Colab (GCP)** for GPU work → **AWS VPC (Edge K3s)** for event and transformation pipeline → **AWS DB/S3** for persistence.
-* Maintain **CA2/CA3 streaming lineage** using **Kafka as the internal event bus**.
-* Move **durability out of the cluster** into AWS-managed services.
-* Keep architecture **simple, reproducible, cost-efficient** for a student environment.
-* Avoid public exposure of internals; all admin and dev access **must go through Bastion**.
+This design preserves the lineage of CA2/CA3 while adding realistic cross-cloud ingestion and managed persistence.
 
 ---
 
-## Benefits
+# **1. Architectural Overview**
 
-### 1️⃣ Clear Multi-Cloud Boundary: Colab → Processor API → Kafka
+### Architectural Diagram
+![architecture](../diagrams/architecture.png)
 
-The Processor API becomes the **sole gateway** into the edge system:
+### Data Diagram
+![data architecture](../diagrams/c1.png)
 
-* Colab extracts embeddings, stats, metadata using GPU/TPU.
-* It **POSTs** to `/metadata`.
-* Processor API **validates/normalizes** the request.
-* Processor API **publishes** to Kafka (`gpu-metadata` topic).
+## **1.1 Core Flow**
 
-This creates a **stable API contract** shielding the internal architecture from Colab’s ephemeral nature.
+```
+Colab (GPU model)
+     → HTTPS → Local Processor API (ngrok)
+     → Kafka (via SSH-tunneled bootstrap=localhost:9092)
+     → Worker in K3s
+     → DocumentDB (ca4.gpu_metadata)
+     → Optional S3 archival
+```
 
----
+### Why this model?
 
-### 2️⃣ Strong Streaming Semantics for Transformations
-
-Kafka provides:
-
-* **Replay** for debugging
-* **Backpressure** during spikes
-* **Decoupled scaling** of Processor API and Worker
-* **Event-driven edge transformations**
-
-This maintains CA2/CA3’s “stream-first” design while upgrading the environment.
-
----
-
-### 3️⃣ Durable, Managed Persistence in AWS
-
-Migrating the database from a Mongo StatefulSet to a **managed Mongo-compatible DB** inside the VPC provides:
-
-* Backups & snapshots
-* Multi-AZ durability
-* No Kubernetes data-plane complexity
-* Easy access from analytics tools
-
-Optional S3 archiving extends the system into a **data-lake-friendly model**.
+* Avoids exposing Processor API publicly in AWS.
+* Allows you to keep running Processor locally, simplifying development.
+* Keeps all durable systems (Kafka, Worker, DB) inside the AWS VPC.
 
 ---
 
-### 4️⃣ Secure & Controlled Access Through Bastion
+# **2. Major Architectural Components**
 
-Nothing inside the VPC is public.
+## **2.1 Colab GPU Producer (GCP)**
 
-Bastion enables:
+* Extracts embeddings using ResNet50 or similar.
+* Gathers GPU hardware details (CUDA version, memory, device name).
+* Sends metadata to Processor API over HTTPS via ngrok.
 
-* SSH → K3s API (via tunneling)
-* SSH → Kafka (port forwarding)
-* SSH → Grafana/Prometheus (optional)
-
-This reduces the attack surface while remaining simple to operate in CA4.
-
----
-
-## Updated Tradeoffs & Risks
-
-### Reliability / HA
-
-| Risk                                      | Why It Exists              | Impact                              | Mitigation Path                        |
-| ----------------------------------------- | -------------------------- | ----------------------------------- | -------------------------------------- |
-| K3s control plane self-hosted on one node | Simplicity over durability | API server outage halts deployments | EKS managed control plane              |
-| Single Kafka broker (initially)           | CA2/CA3 lineage reused     | Broker failure halts ingestion      | Multi-broker Kafka; eventually MSK     |
-| Colab runtime unreliability               | Free GPU service           | Jobs may interrupt or fail          | Move GPU tasks into AWS or on-prem GPU |
+**Why Colab?**
+Free GPU compute + quick iteration without provisioning AWS GPU instances.
 
 ---
 
-### Operations & Day-2 Concerns
+## **2.2 Processor API (Local FastAPI)**
 
-| Issue                              | Cause                      | Impact                      | Future Improvement              |
-| ---------------------------------- | -------------------------- | --------------------------- | ------------------------------- |
-| Bastion requires manual tunneling  | Human SSH workflow         | Hard for teams; error-prone | SSM Session Manager / WireGuard |
-| Kafka STS noisy and resource heavy | Stateful workload          | Logs + CPU spikes           | Move to MSK + fine-tuned quotas |
-| Secrets stored in K8s              | Default Kubernetes storage | Not encrypted by default    | AWS Secrets Manager + ESO       |
+### **Runs locally**, not in K3s.
 
----
+Responsibilities:
 
-### Security
+1. Receive POST `/metadata` requests from Colab.
+2. Validate + normalize metadata.
+3. Produce messages to Kafka topic `gpu-metadata`.
 
-| Concern                          | Reason                 | Mitigation                            |                                                 |
-| -------------------------------- | ---------------------- | ------------------------------------- | ----------------------------------------------- |
-| No public ingress                | Security-first posture | Requires tunneling for all UI access  | Acceptable for CA4; later add SSO-protected ALB |
-| Plaintext Kafka internal traffic | Simplicity and reuse   | Allows snooping inside VPC            | mTLS or service mesh                            |
-| Colab accessing VPC endpoint     | External origin        | Require VPN, IP allowlist, token auth |                                                 |
+Connectivity:
 
----
+* Uses **ngrok** for Colab ingress.
+* Uses **SSH tunnel via Bastion** for Kafka access:
 
-## Scalability Considerations
+    * `localhost:9092 → kafka.platform.svc:9092`
 
-### Application Scaling
-
-* **Processor API**
-  Scales horizontally to handle POST bursts.
-  Good signals: CPU, RPS, HTTP queue times.
-
-* **Kafka**
-  Higher throughput = increase partitions and broker count.
-  Worker scaling is directly tied to **consumer lag**.
-
-* **Worker**
-  Purely horizontal scaling; best signal is Kafka lag.
-
-### Data Scaling
-
-* Move DB to a cluster mode (Atlas or multi-replica DocumentDB).
-* Expand S3 lifecycle rules for long-term storage.
-
-### Observability Scaling
-
-* Prometheus & Loki can saturate local disk.
-  Offload to S3 + Thanos for historical query performance.
+**Rationale:**
+Keeps iteration fast while still integrating with AWS services.
 
 ---
 
-## Alternative Approaches (With Tradeoffs)
+## **2.3 Kafka Broker (K3s)**
 
-| Alternative                           | Strengths                       | Drawbacks                  | When Appropriate             |
-| ------------------------------------- | ------------------------------- | -------------------------- | ---------------------------- |
-| EKS + MSK + Atlas                     | Fully managed; production-grade | Complexity + cost          | CA5 or production version    |
-| All-on-AWS GPU (SageMaker or EC2 GPU) | No cross-cloud complexity       | Higher cost for GPU        | Enterprise workloads         |
-| No streaming (API → DB direct)        | Simpler                         | Loses replay, backpressure | If streaming is not required |
+* Deployed as K3s StatefulSet.
+* Topic: **`gpu-metadata`**
+* Advertises listeners internally (`PLAINTEXT://kafka:9092`)
+* Local Processor connects via forwarded port **9092**, not NodePort.
 
----
+Kafka retains:
 
-## Cost Outlook
-
-| Item                        | Rate           | Notes                              |
-| --------------------------- | -------------- | ---------------------------------- |
-| EC2 edge nodes (K3s)        | Similar to CA3 | Slight increase for DB integration |
-| Managed Mongo-compatible DB | Moderate       | Chosen for durability and ease     |
-| Bastion instance            | Low            | Single t-class                     |
-| Prom + Loki disk            | Moderate       | Consider offloading to S3          |
+* Backpressure
+* Replayability
+* Decoupling between ingestion and processing
 
 ---
 
-## Hardening Roadmap
+## **2.4 Worker (K3s Deployment)**
 
-1. **Replace K3s with EKS**
+The Worker is now included in the final system.
 
-    * Managed control plane
-    * Autoscaler + IAM roles
-2. **Move Kafka to MSK**
+Responsibilities:
 
-    * Multi-broker durability
-    * Zero-maintenance scaling
-3. **Shift Secrets to AWS SSM / Secrets Manager**
+* Consume `gpu-metadata` events.
+* Transform metadata:
 
-    * via External Secrets Operator
-4. **Public ingress with TLS + Auth**
+    * Embedding dimension
+    * GPU hardware details
+    * Timestamps, pipeline tags
+* Insert/update documents in:
 
-    * ALB ingress + OpenID Connect
-5. **GPU producers inside AWS**
+    * `mongo://ca4.gpu_metadata`
+* Optionally archive JSON or embeddings into S3.
 
-    * EKS GPU nodegroup
-    * SageMaker Processing jobs
+**Result:**
+Shift durability and business logic into the AWS VPC.
+
+---
+
+## **2.5 Managed Mongo-Compatible DB (AWS DocumentDB or Mongo Atlas)**
+
+* Stores structured metadata documents.
+* Collection: **`gpu_metadata`** in database **`ca4`**.
+* Robust, multi-AZ, backup-enabled.
+
+**Why a managed DB?**
+
+* Avoids running StatefulSets.
+* Minimizes operational burden.
+* Meets assignment requirement for a persistent store.
+
+---
+
+## **2.6 Optional S3 Archive**
+
+Workers may upload:
+
+* Raw JSON
+* Enriched metadata
+* Binary embeddings (future work)
+
+S3 provides low-cost archival.
+
+---
+
+## **2.7 Bastion Host**
+
+Single controlled ingress for:
+
+* `ssh -L 9092:kafka:9092` → Kafka forwarding
+* `ssh -L 16443:k3s-api:6443` → kubectl
+* `ssh -L 3000:grafana:3000` → Dashboard access
+
+**Why keep Bastion?**
+
+* Removes need for public Kubernetes API or Kafka endpoints.
+* Supports secure remote operations.
+
+---
+
+## **2.8 Monitoring Stack (Prometheus + Loki + Grafana)**
+
+Deployed in `monitoring` namespace:
+
+* Prometheus scrapes:
+
+    * Worker
+    * Kafka exporter
+    * Node metrics
+* Loki + Promtail ship logs for all K3s pods.
+* Grafana dashboards accessed through SSH tunnel.
+
+This maintains CA3 observability while providing visibility into the new Worker pipeline.
+
+---
+
+# **3. Benefits**
+
+## ✔ Clear multi-cloud ingestion boundary
+
+Local Processor API + ngrok cleanly separates Colab compute from edge infrastructure.
+
+## ✔ Stream-first architecture
+
+Kafka remains the backbone enabling:
+
+* Replay
+* Scaling of Workers
+* Resilience to Colab failure
+
+## ✔ Durable persistence via AWS
+
+DocumentDB ensures metadata survives cluster outages.
+
+## ✔ Secure & controlled VPC
+
+Only Bastion is publicly reachable.
+
+## ✔ Separation of dev and prod paths
+
+* **Dev path:** Colab → Local Processor → Kafka (tunneled)
+* **Prod path (future):** Colab → Edge Processor API → Kafka
+
+## ✔ Worker centralized in cluster
+
+Worker transformations and storage now live in the “production zone” rather than on developer machines.
+
+---
+
+# **4. Tradeoffs & Risks**
+
+### ❗ Local Processor introduces dev dependency
+
+If local machine is offline, ingestion stops.
+
+Mitigation: Deploy Processor API into cluster later for true production mode.
+
+### ❗ Single Kafka broker
+
+Risk of downtime; mitigated by low scale + educational context.
+
+### ❗ SSH tunneling fatigue
+
+Can be automated in CA5 using:
+
+* AWS SSM Session Manager
+* WireGuard
+* AWS Client VPN
+
+### ❗ Colab instability
+
+Colab runtimes are ephemeral; metadata generation may fail mid-run.
+
+Future: Migrate GPU extraction to AWS EC2 GPU, ECS GPU, or SageMaker.
+
+---
+
+# **5. Scalability Paths**
+
+### Processor API
+
+Deploy inside cluster behind an Ingress for production scenarios.
+
+### Kafka
+
+Move from K3s to **MSK** with multiple brokers + partitions.
+
+### Worker
+
+Scale horizontally based on Kafka consumer lag.
+
+### Database
+
+Scale to multi-replica DocumentDB or Atlas cluster.
+
+### Observability
+
+Add Thanos + S3 backend for long-term metrics.
+
+---
+
+# **6. Future Alternatives and Architecture Maturity**
+
+| Migration Target             | Strength                        | When to Use                 |
+| ---------------------------- | ------------------------------- | --------------------------- |
+| **EKS + MSK + Atlas**        | Fully managed, production-grade | CA5 or real deployment      |
+| **SageMaker / EC2 GPU**      | Stable long-running GPU compute | Enterprise workloads        |
+| **Direct API → DB pipeline** | Simplest system                 | When streaming isn’t needed |
+
+---
+
+# **Conclusion**
+
+This CA4 architecture:
+
+* Meets **all assignment requirements**
+* Demonstrates **multi-cloud orchestration**
+* Uses event-driven design with **Kafka**
+* Provides durability with **AWS DB**
+* Integrates **Worker** as the primary transformation engine
+* Maintains secure, private infrastructure through **Bastion**
+* Preserves observability across the entire pipeline
+
+With these refinements, your documentation and implementation fully reflect the final working system and are consistent with all project diagrams and code.
