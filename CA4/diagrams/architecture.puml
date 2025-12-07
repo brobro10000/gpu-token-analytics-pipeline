@@ -5,7 +5,7 @@ skinparam defaultFontName Inter
 skinparam wrapWidth 220
 skinparam maxMessageSize 140
 
-title CA4 – Multi-Cloud GPU → API → Kafka → Worker Architecture\n(Updated with ngrok + Bastion Tunneling)
+title CA4 – Multi-Cloud GPU → API → Kafka → Worker Architecture
 
 ' ==========================================================
 ' GOOGLE COLAB (GCP) – GPU METADATA PRODUCER

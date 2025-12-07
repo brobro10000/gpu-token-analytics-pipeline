@@ -1,0 +1,169 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+write_files:
+  # --- Kafka runtime env (will be overwritten at boot by the refresh script) ---
+  - path: /opt/kafka/.env
+    permissions: "0644"
+    content: |
+      # Populated at boot by /usr/local/bin/kafka-env-refresh.sh
+      KAFKA_BIND_ADDR=
+
+  # --- Docker Compose for single-node KRaft (Bitnami Kafka) ---
+  - path: /opt/kafka/docker-compose.yml
+    permissions: "0644"
+    content: |
+      version: "3.8"
+      services:
+        kafka:
+          image: bitnami/kafka:3.7
+          container_name: kafka
+          restart: unless-stopped
+          env_file:
+            - /opt/kafka/.env
+          environment:
+            - KAFKA_ENABLE_KRAFT=yes
+            - KAFKA_CFG_PROCESS_ROLES=broker,controller
+            - KAFKA_CFG_NODE_ID=1
+            - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+            - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+            # Fail fast if env not present at compose-time:
+            - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://$${KAFKA_BIND_ADDR:?missing}:9092
+            - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+            - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+            # single-node friendly replication
+            - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+            - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+            - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+          volumes:
+            - /opt/kafka/data:/bitnami/kafka
+          ports:
+            - "9092:9092"
+          healthcheck:
+            # Use absolute path (Bitnami)
+            test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 30
+
+  # --- On-boot refresh: set KAFKA_BIND_ADDR from IMDS and bring up Compose ---
+  - path: /usr/local/bin/kafka-env-refresh.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      log() { echo "[kafka-env-refresh] $*"; }
+
+      # Wait for Docker to be ready
+      for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
+          break
+        fi
+        log "Docker not ready yet... ($i/30)"; sleep 2
+      done
+
+      # Determine private IP (prefer IMDS, fall back to first local IP)
+      IP="$(curl -fsS http://169.254.169.254/latest/meta-data/local-ipv4 || true)"
+      if [ -z "$${IP:-}" ]; then
+        IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      fi
+      if [ -z "$${IP:-}" ]; then
+        log "Could not determine private IP; using 127.0.0.1 as last resort"
+        IP="127.0.0.1"
+      fi
+
+      # Write env and export for compose interpolation
+      install -d -m 0755 /opt/kafka
+      printf 'KAFKA_BIND_ADDR=%s\n' "$IP" > /opt/kafka/.env
+      export KAFKA_BIND_ADDR="$IP"
+      log "KAFKA_BIND_ADDR set to $KAFKA_BIND_ADDR"
+
+      # Ensure data dir exists/owned
+      install -d -m 0755 /opt/kafka/data
+
+      # Bring up (idempotent). No 'down -v' to preserve data.
+      cd /opt/kafka
+      log "Running: docker compose up -d"
+      install -d -m 0755 /opt/kafka/data
+      chown -R 1001:1001 /opt/kafka/data
+      docker compose up -d
+
+      # Wait for health
+      for i in $(seq 1 60); do
+        status="$(docker inspect --format='{{.State.Health.Status}}' kafka 2>/dev/null || echo "unknown")"
+        if [ "$status" = "healthy" ]; then
+          log "Kafka is healthy"
+          break
+        fi
+        log "Waiting for Kafka health... ($i/60, current: $status)"
+        sleep 2
+      done
+
+      # Create topics (idempotent)
+      log "Creating topics if not exist"
+      docker exec kafka /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic gpu.metrics.v1  --bootstrap-server localhost:9092 || true
+      docker exec kafka /opt/bitnami/kafka/bin/kafka-topics.sh --create --if-not-exists --topic token.usage.v1 --bootstrap-server localhost:9092 || true
+
+      log "Done."
+
+  # --- Systemd unit to run the refresh on every boot ---
+  - path: /etc/systemd/system/kafka-env-refresh.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Refresh Kafka env (KAFKA_BIND_ADDR) and start Compose
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/kafka-env-refresh.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 0) Noninteractive apt + retries helper
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    retry() { for i in 1 2 3; do "$@" && break || { echo "retry $i for: $*"; sleep 8; }; done; }
+
+  # 1) Prereqs for Docker repo
+  - |
+    retry apt-get update -y
+    retry apt-get install -y ca-certificates curl gnupg
+
+  # 2) Add Docker’s official GPG key and repo for Ubuntu 24.04 (noble)
+  - |
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    . /etc/os-release
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+
+  # 3) Install Docker Engine + Compose v2 plugin
+  - |
+    retry apt-get update -y
+    retry apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # 4) Enable and start Docker
+  - systemctl enable --now docker
+
+  # 5) (optional) Allow 'ubuntu' to run docker without sudo (effective next login)
+  - usermod -aG docker ubuntu || true
+
+  # 6) Prepare app dir ownership
+  - mkdir -p /opt/kafka/data
+  - chown -R ubuntu:ubuntu /opt/kafka || true
+
+  # 7) Enable and run the refresh service now (and on every boot)
+  - systemctl daemon-reload
+  - systemctl enable --now kafka-env-refresh.service
+
+  # 8) Sentinels
+  - |
+    date | tee /var/log/ca4-kafka-cloudinit.done
+    echo "OK" > /opt/kafka/CLOUDINIT_OK
