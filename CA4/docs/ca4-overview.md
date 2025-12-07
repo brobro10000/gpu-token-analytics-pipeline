@@ -1,4 +1,4 @@
-# **CA4 Architecture Overview (Updated with Kafka Connectivity & Agent Workflow)**
+# **CA4 Architecture Overview**
 
 ## **1. Purpose of CA4**
 
@@ -205,7 +205,7 @@ The agent can:
 
 ---
 
-# **8. Architectural Tradeoffs (Updated)**
+# **8. Architectural Tradeoffs**
 
 ### Strengths
 
@@ -229,7 +229,7 @@ The agent can:
 
 ---
 
-# **9. Summary (Final Updated Version)**
+# **9. Summary**
 
 **CA4 is a multi-cloud, agent-operable ingestion and streaming system where:**
 

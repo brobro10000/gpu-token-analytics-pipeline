@@ -1,0 +1,166 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+
+write_files:
+  # --- Docker Compose for MongoDB 7 (single node) ---
+  - path: /opt/mongo/docker-compose.yml
+    permissions: "0644"
+    content: |
+      version: "3.8"
+      services:
+        mongo:
+          image: mongo:7.0
+          container_name: mongodb
+          restart: unless-stopped
+          command: ["--bind_ip_all"]
+          ports:
+            - "27017:27017"   # Restrict access with Security Groups to VM3 only
+          volumes:
+            - mongo_data:/data/db
+            - /opt/mongo/config/init-scripts:/docker-entrypoint-initdb.d:ro
+          healthcheck:
+            test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' | grep -q 1"]
+            interval: 10s
+            timeout: 5s
+            start_period: 60s
+            retries: 10
+      volumes:
+        mongo_data:
+
+  # --- Init scripts directory (+ indexes.js + seed-gpus.js). These run only on first start of a fresh data volume. ---
+  - path: /opt/mongo/config/init-scripts/indexes.js
+    permissions: "0644"
+    content: |
+      // indexes.js - creates helpful indexes for the CA4 pipeline
+      const dbname = "ca4";                       // use ca4 for this phase; adjust if you prefer ca0
+      const db = db.getSiblingDB(dbname);
+
+      // gpu_metrics indexes
+      db.gpu_metrics.createIndex({ ts: 1 });
+      db.gpu_metrics.createIndex({ host: 1, gpu_index: 1 });
+
+      // token_usage indexes
+      db.token_usage.createIndex({ ts: 1 });
+      db.token_usage.createIndex({ model: 1 });
+
+      // gpus indexes (for lookups by name or index)
+      db.gpus.createIndex({ name: 1 });
+      db.gpus.createIndex({ gpu_index: 1 });
+
+      print("✅ Created indexes on gpu_metrics, token_usage, and gpus collections.");
+
+  - path: /opt/mongo/config/init-scripts/seed-gpus.js
+    permissions: "0644"
+    content: |
+      // seed-gpus.js - seeds initial GPU inventory docs
+      const dbname = "ca4";
+      const db = db.getSiblingDB(dbname);
+
+      db.gpus.insertMany([
+        {
+          gpu_index: 0,
+          name: "RTX 3090",
+          utilization: 0.7,
+          mem_used_mb: 9000,
+          mem_total_mb: 24576,
+          power_w: 280,
+          price_per_hour_usd: 0.85,
+          ts: new Date()
+        },
+        {
+          gpu_index: 0,
+          name: "A100 40GB",
+          utilization: 0.5,
+          mem_used_mb: 12000,
+          mem_total_mb: 40960,
+          power_w: 210,
+          price_per_hour_usd: 3.2,
+          ts: new Date()
+        }
+      ]);
+
+      print("✅ Seeded gpus collection with two initial documents.");
+
+  # --- On-boot refresh: (re)start Compose and wait for health ---
+  - path: /usr/local/bin/mongo-env-refresh.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      log(){ echo "[mongo-env-refresh] $*"; }
+
+      # Wait for Docker
+      for i in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then break; fi
+        log "Docker not ready ($i/30)"; sleep 2
+      done
+
+      # Ensure init-scripts dir exists (named volume avoids host UID issues)
+      install -d -m 0755 /opt/mongo/config/init-scripts
+
+      # Bring up Mongo
+      cd /opt/mongo
+      log "docker compose up -d"
+      docker compose up -d
+
+      # Wait for container health
+      for i in $(seq 1 60); do
+        status="$(docker inspect --format='{{.State.Health.Status}}' mongodb 2>/dev/null || echo unknown)"
+        if [ "$status" = "healthy" ]; then
+          log "MongoDB healthy"
+          exit 0
+        fi
+        log "Waiting for health... ($i/60, current: $status)"
+        sleep 2
+      done
+
+      log "MongoDB did not become healthy in time"; exit 1
+
+  - path: /etc/systemd/system/mongo-env-refresh.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Start MongoDB (Compose) and wait for health on boot
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/mongo-env-refresh.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # Helper + basics
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    retry() { for i in 1 2 3; do "$@" && break || { echo "retry $i for: $*"; sleep 8; }; done; }
+
+  # Docker repo + install (Ubuntu 24.04 "noble")
+  - |
+    retry apt-get update -y
+    retry apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    . /etc/os-release
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+    retry apt-get update -y
+    retry apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Enable Docker, set up dirs
+  - systemctl enable --now docker
+  - usermod -aG docker ubuntu || true
+  - install -d -m 0755 /opt/mongo/config/init-scripts
+
+  # Enable + run the refresh service now and on future boots
+  - systemctl daemon-reload
+  - systemctl enable --now mongo-env-refresh.service
+
+  # Sentinel
+  - |
+    date | tee /var/log/ca4-mongo-cloudinit.done
+    echo "OK" > /opt/mongo/CLOUDINIT_OK
