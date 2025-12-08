@@ -599,6 +599,51 @@ stop-local-processor:
 	-@[ -f .ngrok_pid ] && kill $$(cat .ngrok_pid) && rm .ngrok_pid && echo "  Stopped ngrok." || echo "  No ngrok PID file."
 
 # ------------------------------
+# Kafka incident helpers (CA4)
+# ------------------------------
+
+diagnose-kafka: ensure-kubeconfig
+	@echo "=== 🔍 Kafka diagnosis (namespace=$(NS_PLATFORM)) ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) get sts kafka || true
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) get pods -l app=kafka -o wide || true
+	@echo
+	@echo "🪵 [Kafka] Recent logs"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) logs -l app=kafka --tail=50 || true
+	@echo
+	@echo "🧩 [Kafka] Service"
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) get svc kafka -o wide || true
+	@echo
+	@echo "🌐 [Kafka] DNS from inside pod"
+	@POD=$$(KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) get pod -l app=kafka -o name | head -n 1); \
+	  if [ -n "$$POD" ]; then \
+	    echo "Using pod $$POD"; \
+	    KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) exec -i $$POD -- \
+	      nslookup kafka.$(NS_PLATFORM).svc.cluster.local || true; \
+	  else \
+	    echo "No Kafka pod found to exec into."; \
+	  fi
+
+restart-kafka: ensure-kubeconfig
+	@echo "=== ♻ Restarting Kafka StatefulSet ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) rollout restart statefulset/kafka
+	@echo "=== ⏳ Waiting for Kafka to become Ready ==="
+	@KUBECONFIG=$(KUBECONFIGL) kubectl -n $(NS_PLATFORM) rollout status statefulset/kafka --timeout=180s
+
+test-kafka-local:
+	@echo "=== 🔧 Testing local Kafka port-forward on $(LOCAL_KAFKA_BOOTSTRAP) ==="
+	@nc -vz 127.0.0.1 $(LOCAL_KAFKA_PORT) || \
+	  (echo "❌ Kafka not reachable on localhost:$(LOCAL_KAFKA_PORT). Is 'make run-local-processor' running?" && exit 1)
+	@echo "✅ Local Kafka port-forward responding."
+
+troubleshoot-kafka: ensure-kubeconfig
+	@echo "=== 🚨 Kafka incident helper (diagnose → restart → verify) ==="
+	@$(MAKE) diagnose-kafka
+	@$(MAKE) restart-kafka
+	@$(MAKE) diagnose-kafka
+	@echo "Now run 'make verify-kafka' or 'make verify-preflight' to confirm recovery."
+
+
+# ------------------------------
 # Simple smoke: ensure topics exist then list (idempotent)
 # ------------------------------
 smoke:

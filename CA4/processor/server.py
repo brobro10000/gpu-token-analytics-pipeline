@@ -1,79 +1,8 @@
-# import os
-# from fastapi import FastAPI, HTTPException
-# from pydantic import BaseModel, Field
-# from typing import List, Optional, Any
-# import time
-#
-# app = FastAPI(
-#     title="CA4 Processor API (Local Dev)",
-#     version="1.0.0",
-# )
-#
-# # ---------------------------
-# # Pydantic model for metadata
-# # ---------------------------
-#
-# class ExtraFields(BaseModel):
-#     pipeline: Optional[str] = "unknown"
-#     notes: Optional[str] = None
-#     gpu_hardware: Optional[Any] = None
-#
-# class MetadataPayload(BaseModel):
-#     source_type: str = Field(..., example="image")
-#     source_uri: str = Field(..., example="dog.jpg")
-#     metadata_id: str
-#     model_name: str
-#     model_version: str
-#     timestamp: int = Field(default_factory=lambda: int(time.time()))
-#     embedding_dim: int
-#     embedding: List[float]
-#     extra: Optional[ExtraFields]
-#
-#
-# # ---------------------------
-# # POST /metadata
-# # ---------------------------
-#
-# @app.post("/metadata")
-# async def receive_metadata(payload: MetadataPayload):
-#     """
-#     Receives GPU/TPU-extracted metadata from Colab or other producers.
-#     """
-#
-#     print("\n--- Received Metadata Document ---")
-#     print(f"ID: {payload.metadata_id}")
-#     print(f"Source: {payload.source_uri}")
-#     print(f"Embedding dim: {payload.embedding_dim}")
-#     print(f"Extra: {payload.extra}")
-#     print("----------------------------------\n")
-#
-#     # Here you would normally:
-#     # - Validate schema
-#     # - Normalize payload
-#     # - Produce to Kafka
-#     # - Track metrics/logs
-#
-#     # For now: echo success response
-#     return {
-#         "status": "ok",
-#         "message": "Metadata received",
-#         "metadata_id": payload.metadata_id,
-#         "embedding_dim": payload.embedding_dim,
-#     }
-#
-#
-# # ---------------------------
-# # Health Check Endpoint
-# # ---------------------------
-#
-# @app.get("/health")
-# async def health_check():
-#     return {"status": "healthy"}
-
 import os
 import time
 import json
 import uuid
+import csv
 from typing import List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -85,6 +14,10 @@ from pydantic import BaseModel, Field
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP")  # set by Makefile
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "gpu-metadata")
+
+# Simple file-based outbox for failed Kafka events
+OUTBOX_FILE = os.getenv("KAFKA_OUTBOX_FILE", "kafka_outbox.csv")
+OUTBOX_ENABLED = True  # flip to False if you ever want to disable outbox behavior
 
 app = FastAPI(
     title="CA4 Processor API (Local Dev)",
@@ -159,12 +92,104 @@ else:
     print("[processor] WARNING: KAFKA_BOOTSTRAP not set; events will not be sent to Kafka.")
 
 
-def send_to_kafka(event: dict) -> None:
+# ---------------------------
+# Outbox helpers
+# ---------------------------
+
+def _append_to_outbox(event: dict) -> None:
+    """
+    Append a single event to the local outbox CSV so it can be retried on restart.
+
+    Very simple format:
+    - 2 columns: timestamp, JSON-serialized event
+
+    Failures here should NEVER crash the API.
+    """
+    if not OUTBOX_ENABLED:
+        return
+
+    try:
+        outbox_dir = os.path.dirname(OUTBOX_FILE)
+        if outbox_dir and not os.path.exists(outbox_dir):
+            os.makedirs(outbox_dir, exist_ok=True)
+
+        with open(OUTBOX_FILE, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([time.time(), json.dumps(event)])
+        print(f"[processor] Event written to outbox CSV: {OUTBOX_FILE}")
+    except Exception as e:
+        # Log but don't raise
+        print(f"[processor] FAILED to write event to outbox CSV '{OUTBOX_FILE}': {e}")
+
+
+def replay_outbox_events() -> None:
+    """
+    On startup, replay any events that were previously written to the outbox CSV.
+
+    Behavior:
+    - If the file does not exist or is empty, do nothing.
+    - Try to re-send each event to Kafka.
+    - If all re-sends succeed, truncate (clear) the file.
+    - If any re-send fails, keep the file for a future retry.
+    """
+    if not OUTBOX_ENABLED:
+        return
+
+    if not os.path.exists(OUTBOX_FILE):
+        return
+
+    try:
+        with open(OUTBOX_FILE, newline="") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+    except Exception as e:
+        print(f"[processor] FAILED to read outbox CSV '{OUTBOX_FILE}': {e}")
+        return
+
+    if not rows:
+        return
+
+    print(f"[processor] Replaying {len(rows)} event(s) from outbox: {OUTBOX_FILE}")
+
+    for idx, row in enumerate(rows, start=1):
+        try:
+            if len(row) != 2:
+                print(f"[processor] Skipping malformed outbox row #{idx}: {row!r}")
+                continue
+
+            _, event_json = row
+            event = json.loads(event_json)
+
+            # During replay we do NOT re-write failures back into the outbox here.
+            send_to_kafka(event, allow_outbox_on_failure=False)
+        except Exception as e:
+            print(f"[processor] FAILED to replay outbox event #{idx}: {e}")
+            print("[processor] Leaving outbox file in place for a future retry.")
+            return
+
+    # All events processed successfully (or safely skipped)
+    try:
+        open(OUTBOX_FILE, "w").close()
+        print(f"[processor] Outbox CSV '{OUTBOX_FILE}' has been flushed.")
+    except Exception as e:
+        print(f"[processor] FAILED to truncate outbox CSV '{OUTBOX_FILE}': {e}")
+
+
+# ---------------------------
+# Kafka send helper
+# ---------------------------
+
+def send_to_kafka(event: dict, *, allow_outbox_on_failure: bool = True) -> None:
     """
     Synchronous helper used in a FastAPI background task to send to Kafka.
+
+    On failure (e.g., Kafka timeout), the event is written to a simple CSV
+    "outbox" so it can be replayed on the next server startup.
     """
     if producer is None:
         print("[processor] Kafka producer not configured; skipping send.")
+        if allow_outbox_on_failure:
+            _append_to_outbox(event)
         return
 
     try:
@@ -176,6 +201,25 @@ def send_to_kafka(event: dict) -> None:
         )
     except Exception as e:
         print(f"[processor] Error sending event to Kafka: {e}")
+        if allow_outbox_on_failure:
+            _append_to_outbox(event)
+
+
+# ---------------------------
+# Startup hook: replay outbox
+# ---------------------------
+
+@app.on_event("startup")
+async def _replay_outbox_on_startup() -> None:
+    """
+    On startup, attempt to replay any events stored in the local outbox CSV.
+    """
+    if producer is None:
+        print("[processor] Kafka producer not configured; skipping outbox replay.")
+        return
+
+    print("[processor] Checking for any events in outbox to replay on startup...")
+    replay_outbox_events()
 
 
 # ---------------------------
@@ -188,6 +232,9 @@ async def receive_metadata(payload: MetadataPayload, background_tasks: Backgroun
     """
     Receives GPU/TPU-extracted metadata from Colab or other producers
     and forwards it to Kafka (if configured).
+
+    If Kafka is unavailable or times out, the event will be written to the
+    local outbox CSV and replayed on a future restart.
     """
 
     print("\n--- Received Metadata Document ---")
@@ -208,10 +255,14 @@ async def receive_metadata(payload: MetadataPayload, background_tasks: Backgroun
     }
 
     # If Kafka is configured, enqueue a background task to send the event.
+    # If Kafka is misconfigured or goes down during send, send_to_kafka will
+    # write the event into the outbox CSV.
     if producer is not None:
         background_tasks.add_task(send_to_kafka, event)
     else:
         print("[processor] Kafka not configured; event will only be logged locally.")
+        if OUTBOX_ENABLED:
+            _append_to_outbox(event)
 
     return {
         "status": "ok",
@@ -219,6 +270,7 @@ async def receive_metadata(payload: MetadataPayload, background_tasks: Backgroun
         "metadata_id": payload.metadata_id,
         "embedding_dim": payload.embedding_dim,
         "kafka_enabled": producer is not None,
+        "outbox_enabled": OUTBOX_ENABLED,
     }
 
 
@@ -233,4 +285,6 @@ async def health_check():
         "status": "healthy",
         "kafka_bootstrap": KAFKA_BOOTSTRAP,
         "kafka_enabled": producer is not None,
+        "outbox_file": OUTBOX_FILE if OUTBOX_ENABLED else None,
+        "outbox_enabled": OUTBOX_ENABLED,
     }

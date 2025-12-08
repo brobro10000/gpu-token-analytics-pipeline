@@ -264,7 +264,35 @@ Add Thanos + S3 backend for long-term metrics.
 
 ---
 
-# **6. Future Alternatives and Architecture Maturity**
+# **6. Incident: Kafka Broker Outage**
+
+* **Detection (Make commands):**
+
+    * `make verify-kafka`
+    * `make verify-preflight`
+    * `make verify-workflow`
+* **Failure Injection:**
+
+    * `kubectl -n platform delete pod kafka-0` (with `KUBECONFIG=.kube/kubeconfig.yaml`)
+* **Impact Observed:**
+
+    * `verify-kafka` shows missing/unready pod
+    * `verify-preflight`/`verify-workflow` fail
+    * Colab → Processor calls fail
+* **Recovery:**
+
+    * `kubectl -n platform rollout restart statefulset/kafka`
+    * `kubectl -n platform rollout status statefulset/kafka`
+    * `make stop-local-processor && make run-local-processor` (if using local path)
+* **Post-Recovery Verification (Make):**
+
+    * `make verify-kafka`
+    * `make verify-preflight`
+    * `make verify-workflow`
+
+---
+
+# **7. Future Alternatives and Architecture Maturity**
 
 | Migration Target             | Strength                        | When to Use                 |
 | ---------------------------- | ------------------------------- | --------------------------- |
