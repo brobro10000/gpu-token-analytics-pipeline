@@ -164,6 +164,27 @@ The `tfplan` provisions the AWS VPC, subnets, security groups, and firewall rule
 * SSH tunnels used for controlled ingress
 * Terraform ensures strict SG boundaries preventing cross-site drift
 
+#### **3.7 Network Policy Matrix (from tfplan + architecture)**
+
+The following matrix summarizes the allowed flows between services, including how access is enforced. “SG” refers to AWS Security Groups provisioned by Terraform; “Tunnel” indicates an SSH or ngrok tunnel is required.
+
+| Source                        | Destination                                   | Purpose                                 | Path / Transport                                   | Port(s)                 | Enforced by                                   | Allowed scope |
+| ----------------------------- | --------------------------------------------- | ---------------------------------------- | --------------------------------------------------- | ----------------------- | --------------------------------------------- | ------------- |
+| Google Colab (GCP)            | Local Processor (laptop)                      | Ingest GPU metadata                      | HTTPS via ngrok URL                                 | 443 → local 8000        | ngrok auth/token; no local inbound ports open | ngrok URL only |
+| Local Processor (laptop)      | Kafka (K3s, platform ns)                      | Publish to `gpu-metadata`                | SSH Tunnel via Bastion: `-L 29092:kafka:9092`       | 22 (Bastion), 9092 int  | SG: admin SSH (22) + intra‑VPC; no public Kafka | Admin IP → Bastion |
+| Worker (K3s, app ns)          | Kafka (K3s, platform ns)                      | Consume `gpu-metadata`                   | In‑cluster Service (ClusterIP/headless)             | 9092                    | SG: k8s intra‑cluster allow; no public access | VPC / cluster |
+| Worker (K3s, app ns)          | DocumentDB (AWS, private)                     | Write transformed docs                   | VPC private endpoint / SG allow                     | 27017                   | DB SG restricts to cluster/VPC [1]            | VPC only |
+| Admin Laptop                  | K3s API (control plane)                       | kubectl / ops                            | Direct (SG allow) or SSH `-L 16443:cp:6443`         | 6443                    | SG: k8s_apiserver from `my_ip_cidr`           | Admin IP only |
+| Admin Laptop                  | Bastion (AWS)                                 | SSH jump host                            | Public IP                                           | 22                      | SG: admin (ssh_from_admin_ip)                 | Admin IP only |
+| Admin Laptop                  | Grafana (K3s, monitoring ns)                  | Dashboards                               | SSH Tunnel via Bastion: `-L 3000:grafana:3000`      | 22 (Bastion), 3000 int  | No public svc; cluster‑internal only          | Admin via tunnel |
+| K3s nodes ↔ K3s nodes         | K3s nodes                                     | Cluster networking / control             | VPC internal                                       | all; kubelet 10250; NodePorts 30000–32767 [2] | SG: intra‑cluster allow; kubelet; NodePorts (opt) | VPC only |
+| Public Internet               | Kafka / K3s API / DocumentDB                  | — (blocked)                              | —                                                 | —                       | No public SG rules / no LoadBalancers         | — |
+| Google Colab (GCP)            | Kafka (AWS)                                   | — (blocked)                              | — (must go via Processor + SSH tunnel)             | —                       | Kafka not exposed publicly                    | — |
+
+[1] CA4 uses a managed Mongo‑compatible backend (DocumentDB/Atlas). The Terraform module shown here manages K3s/node SGs; DB SG is provisioned separately to allow only VPC/cluster sources.
+
+[2] NodePorts are disabled by default unless `enable_nodeports` is set; kubelet `10250/tcp` and intra‑cluster traffic are allowed within the VPC per SG rules.
+
 ---
 
 ## **4. Deployment & Operations**
