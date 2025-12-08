@@ -14,6 +14,7 @@
    make verify-kafka
    make verify-mongo
    ```
+   
 2. **Check end-to-end workflow:**
 
    ```bash
