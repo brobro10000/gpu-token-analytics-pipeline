@@ -1,7 +1,3 @@
-Gotcha—that makes sense. Let’s do a **Kafka outage runbook that explicitly uses the Makefile commands you already have** (`make verify-kafka`, `make verify-workflow`, `make run-local-processor`, etc.), and only drop to raw `kubectl` where you *have* to.
-
----
-
 # 🚨 CA4 Incident Runbook
 
 ## Failure Scenario: Kafka Broker Outage
@@ -17,7 +13,6 @@ Gotcha—that makes sense. Let’s do a **Kafka outage runbook that explicitly u
    ```bash
    make verify-kafka
    make verify-mongo
-   make verify-processor
    ```
 2. **Check end-to-end workflow:**
 
