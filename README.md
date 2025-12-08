@@ -134,7 +134,37 @@ gpu-token-analytics-pipeline/
 │           ├── security_groups/
 │           └── vpc/
 ├── CA4/
-│   └── README.md
+│   ├── README.md
+│   ├── Makefile
+│   ├── diagrams/
+│   ├── docs/
+│   │   ├── architecture.md
+│   │   ├── provisioning.md
+│   │   └── runbook.md
+│   ├── k8s/
+│   │   ├── base/
+│   │   ├── apps/
+│   │   │   └── worker/
+│   │   ├── platform/
+│   │   │   ├── kafka/
+│   │   │   └── mongo/
+│   │   └── monitoring/
+│   │       └── service-monitoring/
+│   ├── processor/
+│   │   └── server.py
+│   ├── producer/
+│   │   └── producer.ipynb
+│   ├── worker/
+│   │   └── worker.py
+│   └── terraform/
+│       └── modules/
+│           ├── cluster/
+│           │   └── templates/
+│           ├── instances/
+│           │   └── templates/
+│           ├── network/
+│           ├── security_groups/
+│           └── vpc/
 ├── README.md
 └── infracost_test.tf
 ```
@@ -850,3 +880,126 @@ make down
 - Grafana Loki shows log data
   
   ![grafana loki data](CA3/screenshots/grafana-loki-data.png)
+
+
+## CA4 — Multi-Site Connectivity & Advanced Networking
+
+Goal: Extend the GPU analytics pipeline into a secure multi-hybrid architecture spanning Google Colab (GPU extraction), a local Processor API, and an AWS K3s cluster hosting Kafka, a Worker, DocumentDB durability, and full observability. Emphasis on secure tunnels, site isolation, and end-to-end resilience.
+
+Authoritative references for CA4:
+- CA4 overview and final docs: CA4/README.md
+- Architecture and connectivity diagrams: CA4/docs/architecture.md
+- Provisioning and access details: CA4/docs/provisioning.md
+- Incident response and runbook: CA4/docs/runbook.md
+
+### 1) Software Stack and Layout (Multi-site)
+- Sites:
+  - Google Colab — GPU/TPU embeddings producer (HTTPS to local Processor via ngrok)
+  - Local laptop — FastAPI Processor (publishes to Kafka through SSH bastion tunnel)
+  - AWS VPC/K3s — Kafka broker, Worker service, DocumentDB, Prometheus/Loki/Grafana, Bastion host
+- Data flow: Colab → HTTPS (ngrok) → Local Processor → SSH tunnel → Kafka (AWS) → Worker → DocumentDB → Observability
+
+### 2) Environment Provisioning (Terraform)
+Prereqs (local): Terraform ≥ 1.6, AWS CLI v2, existing EC2 key pair, jq, curl.
+
+```bash
+make tf-deploy         # terraform init + plan + apply (provisions bastion, K3s control-plane/workers, SGs, etc.)
+```
+
+Notes:
+- Override AWS profile/region as needed: `AWS_PROFILE=terraform AWS_REGION=us-east-1 make deploy`
+- Ensure your EC2 keypair exists and is referenced by tfvars or environment.
+
+### 3) Kubeconfig and Cluster Access
+Copy kubeconfig and verify cluster access via the CA4 Makefile.
+
+```bash
+cd CA4
+make kubeconfig     # scp kubeconfig to CA4/.kube/kubeconfig.yaml
+make status         # KUBECONFIG=.kube/kubeconfig.yaml kubectl get nodes/pods
+
+# If kubeconfig points at 127.0.0.1, open a control-plane API tunnel
+make tunnel         # forwards localhost:6443 → control-plane:6443
+```
+
+### 4) Connectivity (Tunnels) & Local Processor
+- Processor → Kafka (through bastion): Use the Makefile helper to set up local ingestion with ngrok and port-forwarding.
+
+```bash
+make run-local-processor   # runs local FastAPI Processor, starts ngrok, and forwards local :29092 → in-cluster Kafka :9092
+# When finished:
+make stop-local-processor
+```
+
+Manual equivalents (reference):
+
+```bash
+# Kafka over SSH via bastion (example)
+ssh -i ~/.ssh/<key> -L 29092:kafka.platform.svc.cluster.local:9092 ec2-user@<bastion-public-ip>
+
+# Grafana over SSH (after monitoring is deployed)
+ssh -i ~/.ssh/<key> -L 3000:grafana.monitoring.svc:3000 ec2-user@<bastion-public-ip>
+```
+
+### 5) Deploy Kubernetes Resources
+Apply platform and app manifests for Kafka, Worker, and monitoring components (when included).
+
+```bash
+cd CA4
+make deploy
+make status
+```
+
+### 6) Verification & Demo
+Use Makefile helpers to validate the cross-site pipeline end-to-end.
+
+```bash
+make verify            # runs verify-kafka, verify-mongo/db, verify-processor, verify-worker
+make verify-workflow   # end-to-end baseline→nudge→delta checks
+
+# Spot checks
+make verify-kafka
+make verify-mongo
+```
+
+Observability (if deployed):
+- With `make tunnel` active, port-forward or SSH to access Prometheus and Grafana; see CA4/README.md for exact commands.
+
+Run Google Colab notebook to send events and validate the workflow.
+
+### 7) Security Notes
+- Bastion-hosted access only; no public cluster services exposed
+- SSH key-only auth; SGs restrict admin and intra-VPC traffic
+- HTTPS ingress from Colab via ngrok to local Processor
+
+### 8) Deliverables & Evidence
+- Terraform plan/apply and outputs (`make outputs`), bastion/tunnel connectivity
+- Kubeconfig retrieval and cluster status (`make kubeconfig`, `make status`)
+- Local Processor reachable via ngrok; messages flow to Kafka and persist via Worker → DocumentDB
+- Architecture and runbook links: CA4/docs/architecture.md, CA4/docs/runbook.md
+- Short demo clips or screenshots of end-to-end flow and incident handling (see links in CA4/README.md)
+
+### 9) Quickstart (TL;DR)
+```bash
+# 1) Provision infra
+make tf-deploy
+
+# 2) Pull kubeconfig and verify cluster
+cd ..
+make kubeconfig
+make status
+
+# 3) Start local Processor + tunnels for ingestion
+make run-local-processor
+
+# 4) Deploy workloads and verify
+make deploy
+make verify-kafka
+make verify-mongo
+
+# Send events from Google Colab Producer (attached file)
+# ensure images are loaded before attempting to run producer with GPU
+
+# 5) Teardown
+make tf-down
+```

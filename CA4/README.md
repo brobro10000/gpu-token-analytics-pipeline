@@ -170,8 +170,6 @@ The `tfplan` provisions the AWS VPC, subnets, security groups, and firewall rule
 
 ### **4.1 Provisioning (Terraform + Make)**
 
-
-
 1. Provision AWS VPC, subnets, security groups
 2. Deploy Bastion host
 3. Deploy K3s control plane + worker node
@@ -189,7 +187,6 @@ The `tfplan` provisions the AWS VPC, subnets, security groups, and firewall rule
 | ------------------------------ | --------------------------- |
 | Start local Processor + tunnel | `make run-local-processor`  |
 | Verify Kafka                   | `make verify-kafka`         |
-| Verify full workflow           | `make verify-workflow`      |
 | Troubleshoot Kafka             | `make troubleshoot-kafka`   |
 | Stop local Processor           | `make stop-local-processor` |
 
@@ -199,8 +196,8 @@ The `tfplan` provisions the AWS VPC, subnets, security groups, and firewall rule
 
 ### **Failure Scenario: Kafka Broker Outage**
 
-(Required by CA4 guidelines)
-
+[Video](https://www.youtube.com/watch?v=bBdWM4LGJzY)
+[Runbook to fix incident](./docs/runbook.md)
 
 #### **Inject Failure**
 
@@ -212,7 +209,8 @@ kubectl -n platform delete pod kafka-0
 
 ```
 make verify-kafka
-make verify-workflow
+make verify-mongo
+make status
 ```
 
 #### **Recovery**
@@ -227,8 +225,7 @@ make stop-local-processor && make run-local-processor
 
 ```
 make verify-kafka
-make verify-preflight
-make verify-workflow
+make verify-mongo
 ```
 
 See `/runbook.md` for full incident details.
@@ -337,7 +334,6 @@ https://www.youtube.com/watch?v=uiLWJ-Q4Sgg
 ## **10. Conclusion**
 
 This CA4 implementation delivers:
-
 * A fully functional **multi-hybrid cloud data pipeline**
 * Secure edge ingestion via HTTPS + SSH-tunneled Kafka
 * Durable AWS-based persistence
